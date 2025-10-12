@@ -1,0 +1,19 @@
+# Docker related files
+Dockerfile
+.dockerignore
+
+# Git files
+.git
+.gitignore
+
+# Dependencies
+node_modules
+
+# Build output
+.next
+
+# Local environment files
+.env.local
+
+# Log files
+*.log
