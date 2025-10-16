@@ -7,10 +7,14 @@ export const modelReleaseSchema = z.object({
   cs: z.string().optional(),
   branch: z.string().min(1, "Branch is required."),
   appTag: z.string().min(1, "App-Tag is required."),
-  miqBranch: z.string(),
+  multibox: z.string().min(1, 'MULTIBOX is required'),
+  miqBranch: z.string().optional(),
   profile: z.string(),
   labels: z.string().min(1, "Labels are required."),
-  releaseTarget: z.string().min(1, "Release Target is required."),
+  releaseTarget: z
+    .string()
+    .regex(/^r\d{4}$/, 'Must be in the format rXXXX (e.g., r2542)'),
+  monitorLink: z.string().optional(),
 }).refine(data => data.miqBranch || data.profile, {
     message: "Either MIQ Branch or Profile is required.",
     path: ["miqBranch"],
