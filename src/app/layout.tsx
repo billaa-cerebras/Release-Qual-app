@@ -3,7 +3,7 @@ import './globals.css';
 import { Toaster } from "@/components/ui/toaster";
 
 export const metadata: Metadata = {
-  title: 'Release Form Builder',
+  title: 'Release Qualification Center',
   description: 'A simple front end for model release qualification.',
 };
 

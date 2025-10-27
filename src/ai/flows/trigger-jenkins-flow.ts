@@ -32,11 +32,39 @@ export const triggerJenkinsJobs = ai.defineFlow(
   async ({ releases }) => {
     await dbConnect();
 
+    // --- DASHBOARD INITIALIZATION CHECK ---
+    let dashboardReleaseList: string[] = [];
+    try {
+      const dashboardResponse = await fetch('http://dashboards.cerebras.aws:3001/api/target-release');
+      if (!dashboardResponse.ok) {
+        throw new Error(`Dashboard fetch failed: ${dashboardResponse.statusText}`);
+      }
+      const dashboardJson = await dashboardResponse.json();
+      dashboardReleaseList = Array.isArray(dashboardJson.release) ? dashboardJson.release : [];
+    } catch (error: any) {
+      return {
+        success: false,
+        message: `Could not verify dashboard initialization: ${error.message}`,
+      };
+    }
+
+    const missingDashboards = releases
+      .map(r => r.releaseTarget)
+      .filter(target => !dashboardReleaseList.includes(target));
+
+    if (missingDashboards.length > 0) {
+      return {
+        success: false,
+        message: `Dashboard is not initialized for target release(s): ${missingDashboards.join(", ")}. Please initialize the dashboard first.`,
+      };
+    }
+
+    // --- EXISTING JENKINS LOGIC ---
     const { JENKINS_URL, JENKINS_USERNAME, JENKINS_API_TOKEN } = process.env;
 
     if (!JENKINS_URL || !JENKINS_USERNAME || !JENKINS_API_TOKEN) {
       const message = 'Jenkins credentials are not configured in the environment.';
-      for (const release of releases) {
+      for (const release of releasesToTrigger) {
         await Job.create({
           releaseId: release.releaseTarget, modelName: release.modelName, type: 'RELEASE',
           status: 'FAILURE', message: message,
@@ -55,7 +83,7 @@ export const triggerJenkinsJobs = ai.defineFlow(
         crumbData = await response.json();
     } catch (error: any) {
         const message = `Error getting Jenkins crumb: ${error.message}`;
-        for (const release of releases) {
+        for (const release of releasesToTrigger) {
             await Job.create({
               releaseId: release.releaseTarget, modelName: release.modelName, type: 'RELEASE',
               status: 'FAILURE', message: message,
@@ -74,7 +102,7 @@ export const triggerJenkinsJobs = ai.defineFlow(
 
     let allSuccessful = true;
 
-    for (const release of releases) {
+    for (const release of releasesToTrigger) {
         const params = new URLSearchParams({
             'project': jobName, 'MODEL_NAME': release.modelName, 'CUSTOM_MODEL_NAME': '', 'MODEL_VARIANT_PARAMS': '',
             'PICK_DEFAULT_DRAFT_MODEL': 'true', 'DRAFT_MODEL_NAME': '', 'CUSTOM_MODEL_CONFIG_FILE': '', 'RELEASE_PROFILE': release.profile,
@@ -116,6 +144,13 @@ export const triggerJenkinsJobs = ai.defineFlow(
             });
         }
     }
-    return { success: allSuccessful, message: allSuccessful ? 'All Jenkins jobs processed successfully.' : 'Some Jenkins jobs failed to trigger.' };
+
+    let finalMessage = allSuccessful
+      ? 'All Jenkins jobs processed successfully.'
+      : 'Some Jenkins jobs failed to trigger.';
+    if (releasesMissingDashboard.length) {
+      finalMessage += ` Dashboard not initialized for: ${releasesMissingDashboard.join(", ")}.`;
+    }
+    return { success: allSuccessful, message: finalMessage };
   }
 );
