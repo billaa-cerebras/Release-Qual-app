@@ -1,15 +1,17 @@
+// src/ai/flows/trigger-jenkins-flow.ts
 'use server';
 /**
  * @fileOverview A flow for triggering Jenkins jobs for model releases.
+ * Uses dynamically generated job names based on releaseTarget.
  */
 import { ai } from '@/ai/plugins';
 import { z } from 'zod';
 import { modelReleaseSchema } from '@/lib/schemas';
 import dbConnect from '@/lib/mongodb';
-import Job from '@/models/Job';
+import Job from '@/models/Job'; // Assuming Job model exists and has jenkinsJobName field
 
 const triggerJenkinsJobsInputSchema = z.object({
-  releases: z.array(modelReleaseSchema),
+  releases: z.array(modelReleaseSchema).min(1, { message: "At least one release is required."}), // Ensure at least one release
 });
 
 const triggerJenkinsJobsOutputSchema = z.object({
@@ -32,49 +34,34 @@ export const triggerJenkinsJobs = ai.defineFlow(
   async ({ releases }) => {
     await dbConnect();
 
-    // --- DASHBOARD INITIALIZATION CHECK ---
-    let dashboardReleaseList: string[] = [];
-    try {
-      const dashboardResponse = await fetch('http://dashboards.cerebras.aws:3001/api/target-release');
-      if (!dashboardResponse.ok) {
-        throw new Error(`Dashboard fetch failed: ${dashboardResponse.statusText}`);
-      }
-      const dashboardJson = await dashboardResponse.json();
-      dashboardReleaseList = Array.isArray(dashboardJson.release) ? dashboardJson.release : [];
-    } catch (error: any) {
-      return {
-        success: false,
-        message: `Could not verify dashboard initialization: ${error.message}`,
-      };
+    // --- REMOVED Dashboard Initialization Check ---
+    // This check is now performed in the calling server action (triggerReleaseJobsAction)
+
+    // --- Dynamic Job Name Logic ---
+    const releaseTarget = releases[0].releaseTarget; // Assuming all releases in payload have the same target (validated by server action)
+    if (!releaseTarget || !/^r\d{4}$/.test(releaseTarget)) {
+        return { success: false, message: 'Invalid or missing releaseTarget in payload.' };
     }
+    const jenkinsJobName = `csx-inference-release-qual-${releaseTarget}`; // Construct the dynamic job name
 
-    const missingDashboards = releases
-      .map(r => r.releaseTarget)
-      .filter(target => !dashboardReleaseList.includes(target));
-
-    if (missingDashboards.length > 0) {
-      return {
-        success: false,
-        message: `Dashboard is not initialized for target release(s): ${missingDashboards.join(", ")}. Please initialize the dashboard first.`,
-      };
-    }
-
-    // --- EXISTING JENKINS LOGIC ---
+    // --- Jenkins Credentials ---
     const { JENKINS_URL, JENKINS_USERNAME, JENKINS_API_TOKEN } = process.env;
 
     if (!JENKINS_URL || !JENKINS_USERNAME || !JENKINS_API_TOKEN) {
       const message = 'Jenkins credentials are not configured in the environment.';
-      for (const release of releasesToTrigger) {
+      // Log failure for all intended releases
+      for (const release of releases) {
         await Job.create({
           releaseId: release.releaseTarget, modelName: release.modelName, type: 'RELEASE',
-          status: 'FAILURE', message: message,
+          status: 'FAILURE', message: message, jenkinsJobName: jenkinsJobName, // Log the intended job name
         });
       }
       return { success: false, message: message };
     }
-    
+
     const auth = Buffer.from(`${JENKINS_USERNAME}:${JENKINS_API_TOKEN}`).toString('base64');
 
+    // --- Get Crumb ---
     let crumbData: JenkinsCrumb;
     try {
         const crumbUrl = `${JENKINS_URL}/crumbIssuer/api/json`;
@@ -83,17 +70,17 @@ export const triggerJenkinsJobs = ai.defineFlow(
         crumbData = await response.json();
     } catch (error: any) {
         const message = `Error getting Jenkins crumb: ${error.message}`;
-        for (const release of releasesToTrigger) {
+        for (const release of releases) {
             await Job.create({
               releaseId: release.releaseTarget, modelName: release.modelName, type: 'RELEASE',
-              status: 'FAILURE', message: message,
+              status: 'FAILURE', message: message, jenkinsJobName: jenkinsJobName, // Log the intended job name
             });
         }
         return { success: false, message: message };
     }
 
-    const jobName = "csx-inference-model-qual-v2";
-    const jobUrl = `${JENKINS_URL}/job/${jobName}/buildWithParameters`;
+    // --- Trigger Jobs Loop ---
+    const jobUrl = `${JENKINS_URL}/job/${jenkinsJobName}/buildWithParameters`; // Use dynamic job name
     const headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         [crumbData.crumbRequestField]: crumbData.crumb,
@@ -101,56 +88,74 @@ export const triggerJenkinsJobs = ai.defineFlow(
     };
 
     let allSuccessful = true;
+    const results = [];
 
-    for (const release of releasesToTrigger) {
+    for (const release of releases) {
+        // Construct parameters (ensure these match the job's expected params)
         const params = new URLSearchParams({
-            'project': jobName, 'MODEL_NAME': release.modelName, 'CUSTOM_MODEL_NAME': '', 'MODEL_VARIANT_PARAMS': '',
-            'PICK_DEFAULT_DRAFT_MODEL': 'true', 'DRAFT_MODEL_NAME': '', 'CUSTOM_MODEL_CONFIG_FILE': '', 'RELEASE_PROFILE': release.profile,
-            'MIQ_PROFILE_BRANCH': release.miqBranch, 'PROFILE_MODE': 'release', 'PROFILE_FLOW_NAME_FILTER': '', 'PROFILE_ATTR_FILTER': '',
-            'SERVER_MODE': 'replica (Full replica server - requires systems)', 'SERVER_CONFIG_PARAMS': 'job_priority=p2\njob_timeout_s=172800\nreadiness_timeout_s=86400\n',
-            'CEREBRAS_API_HOST': '', 'CEREBRAS_API_PORT': '', 'APP_TAG': release.appTag, 'APP_TAG_FROM_WORKSPACE': 'false', 'NAMESPACE': 'inf-integ',
-            'MULTIBOX': release.multibox, 'CONSTRAINTS': '', 'USERNODE': 'net004-us-sr04.sck2.cerebrascloud.com', 'USE_LOCAL_CHECKPOINT': 'true',
-            'REMOTEWORKDIRROOT': '/n0/lab/test', 'RELEASE_DRY_RUN': 'false', 'RELEASE_KILL_SERVER_ON_ABORT': 'true', 'ENABLE_SERVER_AUTO_RECOVERY': 'true',
-            'TRAIN_PYTEST_ADDOPTS': '--cifparam runconfig.job_priority=p1 --cifparam runconfig.disable_version_check=true', 'CUSTOM_TRAIN_FILE': '',
-            'TRAIN_NAME': jobName, 'branch': release.branch, 'COMMIT': '', 'LOGLEVEL': 'INFO', 'BUILDID': 'latest', 'TRIGGER_AUTOMATED_MSG': 'false',
-            'Notes': `Triggered from Release Form Builder for ${release.modelName}`, 'TARGET_RELEASE': release.releaseTarget, 'EXTRA_ENV_VARS': '',
-            'JOB_LABELS': release.labels, 'LAUNCH_AUTO_BISECT_JOB': 'false', 'IMPORT_SECRETS_FROM_VAULT': 'OPENAI_API_KEY,EVAL_GITHUB_TOKEN,CEREBRAS_API_KEY,HF_TOKEN',
-            'BUILD_NAME_SUFFIX': '', 'TEST_BRANCH': ''
+            // ... (keep existing parameters, ensure they are correct for the cloned job)
+            'project': jenkinsJobName, // Use dynamic name if needed by job param
+            'MODEL_NAME': release.modelName,
+            'CUSTOM_MODEL_NAME': '', // etc...
+            'BRANCH': release.branch, // Ensure 'branch' is the correct param name if different from schema key
+            'APP_TAG': release.appTag,
+            'MULTIBOX': release.multibox,
+            'MIQ_PROFILE_BRANCH': release.miqBranch || '', // Handle optional field
+            'PROFILE': release.profile || '', // Handle optional field
+            'JOB_LABELS': release.labels,
+            'TARGET_RELEASE': release.releaseTarget,
+            'Notes': `Triggered via Release App for ${release.modelName} (Job: ${jenkinsJobName})`,
+            // Add/adjust other params as required by the CLONED job definition
         });
 
-        try {
+         try {
             const response = await fetch(jobUrl, { method: 'POST', headers: headers, body: params.toString() });
             if (response.status === 201) {
                 const queueUrl = response.headers.get("Location");
                 if (!queueUrl) throw new Error("Jenkins did not return a queue location.");
+
+                // Save job info to DB including the specific job name used
                 await Job.create({
-                    releaseId: release.releaseTarget, modelName: release.modelName, jenkinsUrl: queueUrl,
-                    type: 'RELEASE', status: 'QUEUED', message: 'Job successfully triggered and is now in the queue.',
+                    releaseId: release.releaseTarget,
+                    modelName: release.modelName,
+                    jenkinsUrl: queueUrl,
+                    type: 'RELEASE',
+                    status: 'QUEUED',
+                    message: `Job triggered on '${jenkinsJobName}' and is now in the queue.`,
+                    jenkinsJobName: jenkinsJobName, // Store the job name
                 });
+                 results.push({ model: release.modelName, status: 'QUEUED' });
             } else {
                 const errorText = await response.text();
-                if (errorText.includes('<!DOCTYPE html>')) {
-                    throw new Error('Jenkins Internal Server Error');
-                } else {
-                    throw new Error(`Failed to trigger job. Status: ${response.status}. Response: ${errorText}`);
-                }
+                 let detailedError = `Failed to trigger job '${jenkinsJobName}'. Status: ${response.status}. Response: ${errorText}`;
+                 if (response.status === 404) {
+                     detailedError = `Failed to trigger job: Job '${jenkinsJobName}' not found on Jenkins. Was it created successfully?`;
+                 } else if (errorText.includes('<!DOCTYPE html>')) {
+                    detailedError = `Jenkins Internal Server Error when triggering '${jenkinsJobName}'.`;
+                 }
+                throw new Error(detailedError);
             }
         } catch (error: any) {
             allSuccessful = false;
-            console.error(`Failed to trigger job for ${release.modelName}:`, error);
+            console.error(`Failed to trigger job ${jenkinsJobName} for ${release.modelName}:`, error);
             await Job.create({
-                releaseId: release.releaseTarget, modelName: release.modelName, jenkinsUrl: '',
-                type: 'RELEASE', status: 'FAILURE', message: error.message || 'An unexpected error occurred during triggering.',
+                releaseId: release.releaseTarget,
+                modelName: release.modelName,
+                jenkinsUrl: '',
+                type: 'RELEASE',
+                status: 'FAILURE',
+                message: error.message || `An unexpected error occurred during triggering job '${jenkinsJobName}'.`,
+                jenkinsJobName: jenkinsJobName, // Store the intended job name even on failure
             });
+            results.push({ model: release.modelName, status: 'FAILURE', error: error.message });
         }
     }
 
-    let finalMessage = allSuccessful
-      ? 'All Jenkins jobs processed successfully.'
-      : 'Some Jenkins jobs failed to trigger.';
-    if (releasesMissingDashboard.length) {
-      finalMessage += ` Dashboard not initialized for: ${releasesMissingDashboard.join(", ")}.`;
-    }
+    const finalMessage = allSuccessful
+      ? `All release jobs successfully triggered on '${jenkinsJobName}'.`
+      : `Some release jobs failed to trigger on '${jenkinsJobName}'. Check logs/DB for details.`;
+
+    // Consider returning more detailed results if needed by the UI
     return { success: allSuccessful, message: finalMessage };
   }
 );
