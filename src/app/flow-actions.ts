@@ -1,14 +1,21 @@
+// src/app/flow-actions.ts
 "use server";
 
 import dbConnect from "@/lib/mongodb";
-import Job, { IJob, JobType } from "@/models/Job";
+import Job, { IJob, JobType } from "@/models/Job"; // Assuming Job model exists
 import { revalidatePath } from "next/cache";
 import { triggerJenkinsJobs } from "@/ai/flows/trigger-jenkins-flow";
 import { triggerPrecheckJobs } from "@/ai/flows/trigger-precheck-flow";
 import { checkJenkinsJobStatus } from "@/ai/flows/check-jenkins-flow";
+import { cloneJenkinsJobFlow } from "@/ai/flows/clone-jenkins-job"; // New import
 import { ModelRelease } from "@/lib/schemas";
-
-const API_BASE_URL = "http://dashboards.cerebras.aws:3001/api";
+// Import functions from the new dashboard API module
+import {
+  getTargetReleases,
+  setTargetReleases,
+  populateModels,
+  checkDashboardInitialization
+} from "@/lib/dashboard-api";
 
 interface TriggerPayload {
   releases: ModelRelease[];
@@ -16,50 +23,45 @@ interface TriggerPayload {
 
 /**
  * Utility: Check if the dashboard is initialized for a given target release.
- * Returns true if the targetRelease is present in the 'release' array from dashboard service.
+ * Uses the refactored dashboard API function.
  */
 export async function isDashboardInitializedForRelease(targetRelease: string): Promise<boolean> {
-  const res = await fetch(`${API_BASE_URL}/target-release`);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch dashboard releases. Status: ${res.status}`);
+  try {
+    // Use the centralized API function
+    return await checkDashboardInitialization(targetRelease);
+  } catch (error: any) {
+    console.error("Dashboard check failed:", error);
+    // Treat API errors as 'not initialized' or re-throw based on desired handling
+    throw new Error(`Dashboard check failed: ${error.message}`);
   }
-  const data = await res.json();
-  const releases: string[] = Array.isArray(data.release) ? data.release : [];
-  return releases.includes(targetRelease);
 }
 
 /**
  * Trigger pre-check Jenkins jobs with mandatory dashboard initialization guard.
+ * Reads precheck job name from env.
  */
 export async function triggerPrecheckJobsAction(payload: TriggerPayload) {
   const { releases } = payload;
   if (!releases || releases.length === 0) {
     return { success: false, message: "No releases provided." };
   }
-
-  // Enforce single releaseTarget
   const targets = Array.from(new Set(releases.map(r => r.releaseTarget)));
   if (targets.length !== 1) {
-    return {
-      success: false,
-      message: "All selected models must share the same release target for pre-check submission."
-    };
+    return { success: false, message: "All models must share the same release target for pre-check." };
   }
   const releaseTarget = targets[0];
 
-  // Dashboard initialization check
+  // Dashboard initialization check (uses updated isDashboardInitializedForRelease)
   try {
     const ready = await isDashboardInitializedForRelease(releaseTarget);
     if (!ready) {
-      return {
-        success: false,
-        message: `Dashboard is not initialized for release: ${releaseTarget}. Please initialize the dashboard first.`
-      };
+      return { success: false, message: `Dashboard not initialized for ${releaseTarget}. Please initialize the release first.` };
     }
   } catch (e: any) {
     return { success: false, message: `Dashboard check failed: ${e.message}` };
   }
 
+  // Call Genkit flow (which now reads job name from env)
   const result = await triggerPrecheckJobs(payload);
   revalidatePath("/");
   return result;
@@ -67,42 +69,37 @@ export async function triggerPrecheckJobsAction(payload: TriggerPayload) {
 
 /**
  * Trigger release Jenkins jobs with mandatory dashboard initialization guard.
+ * The called flow will dynamically determine the job name.
  */
 export async function triggerReleaseJobsAction(payload: TriggerPayload) {
   const { releases } = payload;
   if (!releases || releases.length === 0) {
     return { success: false, message: "No releases provided." };
   }
-
   const targets = Array.from(new Set(releases.map(r => r.releaseTarget)));
   if (targets.length !== 1) {
-    return {
-      success: false,
-      message: "All selected models must share the same release target for release submission."
-    };
+    return { success: false, message: "All models must share the same release target for release." };
   }
   const releaseTarget = targets[0];
 
-  // Dashboard initialization check
+  // Dashboard initialization check (uses updated isDashboardInitializedForRelease)
   try {
     const ready = await isDashboardInitializedForRelease(releaseTarget);
     if (!ready) {
-      return {
-        success: false,
-        message: `Dashboard is not initialized for release: ${releaseTarget}. Please initialize the dashboard first.`
-      };
+      return { success: false, message: `Dashboard not initialized for ${releaseTarget}. Please initialize the release first.` };
     }
   } catch (e: any) {
     return { success: false, message: `Dashboard check failed: ${e.message}` };
   }
 
+  // Call Genkit flow (which now derives job name)
   const result = await triggerJenkinsJobs(payload);
   revalidatePath("/");
   return result;
 }
 
 /**
- * Poll Jenkins job status (unchanged).
+ * Poll Jenkins job status (unchanged logic, calls Genkit flow).
  */
 export async function checkJenkinsJobStatusAction({ releaseId }: { releaseId: string }) {
   await checkJenkinsJobStatus({ releaseId });
@@ -110,9 +107,10 @@ export async function checkJenkinsJobStatusAction({ releaseId }: { releaseId: st
 }
 
 /**
- * Get the latest pre-check status for a set of model names within a release.
+ * Get the latest pre-check status for models (unchanged logic).
  */
 export async function getPrecheckStatusForModels(modelNames: string[], releaseId: string) {
+   // ... (no changes needed here) ...
   await dbConnect();
   const statuses = await Job.find({
     releaseId,
@@ -130,76 +128,95 @@ export async function getPrecheckStatusForModels(modelNames: string[], releaseId
 }
 
 /**
- * Fetch jobs by release ID and type.
+ * Fetch jobs by release ID and type (unchanged logic).
  */
 export async function getJobsByReleaseId(releaseId: string, type: JobType): Promise<IJob[]> {
-  if (!releaseId) return [];
-  await dbConnect();
-  const jobs = await Job.find({ releaseId, type }).sort({ submittedAt: -1 }).lean();
-  return JSON.parse(JSON.stringify(jobs));
+   // ... (no changes needed here) ...
+   if (!releaseId) return [];
+   await dbConnect();
+   const jobs = await Job.find({ releaseId, type }).sort({ submittedAt: -1 }).lean();
+   return JSON.parse(JSON.stringify(jobs));
 }
 
+
+// +++ NEW Action to wrap the clone flow +++
 /**
- * Dashboard initiation (unchanged).
+ * Clones the Jenkins template job for a specific release target.
  */
-export async function initiateDashboardAction(
-  selectedReleases: ModelRelease[],
-  userName: string
+export async function cloneJenkinsJobAction({ releaseTarget }: { releaseTarget: string }) {
+    if (!releaseTarget || !/^r\d{4}$/.test(releaseTarget)) {
+        return { success: false, message: 'Invalid Release Target format provided.' };
+    }
+    try {
+        const result = await cloneJenkinsJobFlow({ releaseTarget });
+        return result;
+    } catch (error: any) {
+         console.error("Clone Jenkins Job Action Error:", error);
+        return { success: false, message: error.message || "An unknown error occurred during job cloning." };
+    }
+}
+
+
+// --- Renamed and Modified Action ---
+/**
+ * Initializes the dashboard and clones the Jenkins job for the release.
+ * Renamed from initiateDashboardAction.
+ */
+export async function initializeReleaseSetupAction(
+  selectedReleases: ModelRelease[]
 ) {
   const releaseTarget = selectedReleases[0]?.releaseTarget;
+  const userName = process.env.DASHBOARD_USERNAME || "release-qual-app-user"; // Read from env
+
   if (!releaseTarget) {
-    throw new Error("Release Target is missing.");
+    return { success: false, message: "Release Target is missing from selected models." };
   }
 
+  let dashboardInitialized = false;
+  let jenkinsCloned = false;
+  let dashboardMessage = "";
+  let jenkinsMessage = "";
+  let finalMessage = "";
+
+  // Step 1: Initialize Dashboard
   try {
-    // Step 1: Fetch current release targets
-    const getResponse = await fetch(`${API_BASE_URL}/target-release`);
-    if (!getResponse.ok) {
-      throw new Error(`Failed to fetch release targets. Status: ${getResponse.status}`);
-    }
-    const data = await getResponse.json();
-    const existingReleases: string[] = data.release || [];
+    const existingReleases = await getTargetReleases(); // Use new API function
     if (!existingReleases.includes(releaseTarget)) {
       existingReleases.push(releaseTarget);
+      await setTargetReleases(existingReleases, `Initialize ${releaseTarget}`, userName); // Use new API function
+      dashboardMessage = `Added ${releaseTarget} to dashboard targets. `;
+    } else {
+        dashboardMessage = `Dashboard target ${releaseTarget} already exists. `;
     }
 
-    // Step 2: Update target-release list
-    const setTargetPayload = {
-      release: existingReleases,
-      description: "New Release Initiation",
-      userName
-    };
-    const setTargetResponse = await fetch(`${API_BASE_URL}/target-release`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(setTargetPayload)
-    });
-    if (!setTargetResponse.ok) {
-      throw new Error(`Failed to set active release target. Status: ${setTargetResponse.status}`);
-    }
-
-    // Step 3: Populate models
-    const modelsPayload = {
-      release: releaseTarget,
-      models: selectedReleases.map(model => ({
-        name: model.modelName,
-        owner: model.owner || userName,
-        git_branch: model.branch
-      }))
-    };
-    const populateDashboardResponse = await fetch(`${API_BASE_URL}/releases`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(modelsPayload)
-    });
-    if (!populateDashboardResponse.ok) {
-      throw new Error(`Failed to populate dashboard with models. Status: ${populateDashboardResponse.status}`);
-    }
-
-    revalidatePath("/");
-    return { success: true, message: `New dashboard initiated for Release: ${releaseTarget}` };
+    await populateModels(releaseTarget, selectedReleases, userName); // Use new API function
+    dashboardMessage += "Populated models.";
+    dashboardInitialized = true;
   } catch (error: any) {
-    console.error("Initiate Dashboard Action Error:", error);
-    return { success: false, message: error.message };
+    console.error("Dashboard Initialization Error:", error);
+    dashboardMessage = `Dashboard initialization failed: ${error.message}`;
+    // Stop if dashboard init fails
+    return { success: false, message: dashboardMessage };
   }
+
+  // Step 2: Clone Jenkins Job (only if dashboard init succeeded)
+  try {
+      const cloneResult = await cloneJenkinsJobAction({ releaseTarget }); // Call the new action
+      jenkinsMessage = cloneResult.message;
+      if (!cloneResult.success) {
+          throw new Error(cloneResult.message);
+      }
+      jenkinsCloned = true;
+  } catch (error: any) {
+       console.error("Jenkins Job Clone Error:", error);
+       jenkinsMessage = `Jenkins job cloning failed: ${error.message}`;
+       // Return partial success if dashboard worked but Jenkins failed
+       finalMessage = `${dashboardMessage} ${jenkinsMessage}`;
+       return { success: false, message: finalMessage };
+  }
+
+  // If both steps succeeded
+  finalMessage = `${dashboardMessage} ${jenkinsMessage}`;
+  revalidatePath("/"); // Revalidate path after all successful operations
+  return { success: true, message: finalMessage };
 }

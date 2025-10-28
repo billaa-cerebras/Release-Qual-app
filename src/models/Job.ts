@@ -1,42 +1,34 @@
-import mongoose, { Document, Schema, models } from 'mongoose';
+// src/models/Job.ts (or update existing)
+import mongoose, { Document, Schema } from 'mongoose';
 
-export type JobStatus = 'QUEUED' | 'BUILDING' | 'SUCCESS' | 'FAILURE' | 'ABORTED' | 'POLL_ERROR' | 'UNKNOWN';
-export type PrecheckStatus = 'NOT_STARTED' | 'PENDING' | 'SUCCESS' | 'FAILURE' | 'BUILDING' | 'UNKNOWN';
-export type JobType = 'PRECHECK' | 'RELEASE';
+export type JobType = "RELEASE" | "PRECHECK";
+export type JobStatus = "QUEUED" | "BUILDING" | "SUCCESS" | "FAILURE" | "ABORTED" | "UNKNOWN" | "POLL_ERROR";
+export type PrecheckStatus = "PENDING" | "BUILDING" | "SUCCESS" | "FAILURE" | "NOT_STARTED"; // Assuming from submission-details
 
 export interface IJob extends Document {
   releaseId: string;
   modelName: string;
-  
-  // Release Job Fields
-  status: JobStatus;
-  jenkinsUrl?: string;
-  message?: string;
-
-  // Pre-check Fields
-  precheckStatus: PrecheckStatus;
-  precheckResult?: string;
-
-  // Metadata
+  jenkinsUrl: string;
+  jenkinsJobName?: string; // <-- Added field
   type: JobType;
+  status: JobStatus; // For RELEASE type
+  precheckStatus: PrecheckStatus; // For PRECHECK type
+  message?: string; // For RELEASE type
+  precheckResult?: string; // For PRECHECK type
   submittedAt: Date;
 }
 
 const JobSchema: Schema = new Schema({
   releaseId: { type: String, required: true, index: true },
   modelName: { type: String, required: true },
-  
-  status: { type: String, enum: ['QUEUED', 'BUILDING', 'SUCCESS', 'FAILURE', 'ABORTED', 'POLL_ERROR', 'UNKNOWN'], default: 'QUEUED' },
   jenkinsUrl: { type: String },
+  jenkinsJobName: { type: String }, // <-- Added field
+  type: { type: String, enum: ["RELEASE", "PRECHECK"], required: true },
+  status: { type: String, enum: ["QUEUED", "BUILDING", "SUCCESS", "FAILURE", "ABORTED", "UNKNOWN", "POLL_ERROR"] },
+  precheckStatus: { type: String, enum: ["PENDING", "BUILDING", "SUCCESS", "FAILURE", "NOT_STARTED"] },
   message: { type: String },
-
-  precheckStatus: { type: String, enum: ['NOT_STARTED', 'PENDING', 'SUCCESS', 'FAILURE', 'BUILDING', 'UNKNOWN'], default: 'NOT_STARTED' },
   precheckResult: { type: String },
-
-  type: { type: String, enum: ['PRECHECK', 'RELEASE'], required: true },
   submittedAt: { type: Date, default: Date.now },
-}, {
-  timestamps: true,
-});
+}, { timestamps: true }); // Adding timestamps might be useful
 
-export default models.Job || mongoose.model<IJob>('Job', JobSchema);
+export default mongoose.models.Job || mongoose.model<IJob>('Job', JobSchema);
