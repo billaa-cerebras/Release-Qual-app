@@ -1,3 +1,4 @@
+// src/components/batch-release-form.tsx
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
@@ -32,8 +33,7 @@ import {
   triggerPrecheckJobsAction,
   triggerReleaseJobsAction,
   getPrecheckStatusForModels,
-  initiateDashboardAction,
-  // NEW IMPORT: server-side dashboard initialization checker
+  initializeReleaseSetupAction, // Use the renamed server action
   isDashboardInitializedForRelease
 } from "@/app/flow-actions";
 import { modelReleaseSchema, type ModelRelease } from "@/lib/schemas";
@@ -65,6 +65,7 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
+// Original table headers structure
 const tableHeaders = [
   { key: "modelName", label: "Model Name", required: true, icon: Package, isEditable: true },
   { key: "owner", label: "Owner", required: false, icon: User, isEditable: true },
@@ -86,7 +87,7 @@ const initialFormValues: ModelRelease = {
   miqBranch: "main",
   multibox: "dh1",
   monitorLink: "",
-  profile: "",
+  profile: "", // Required by schema
   labels: "",
   releaseTarget: "",
   owner: "",
@@ -101,7 +102,7 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
   const [isSubmittingPrecheck, setIsSubmittingPrecheck] = useState(false);
   const [isSubmittingRelease, setIsSubmittingRelease] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const [isInitiatingDashboard, setIsInitiatingDashboard] = useState(false);
+  const [isInitializingRelease, setIsInitializingRelease] = useState(false); // Renamed state
   const [isSubmittingPostcheck, setIsSubmittingPostcheck] = useState(false);
   const [confluenceUrl, setConfluenceUrl] = useState("");
   const { toast } = useToast();
@@ -109,11 +110,8 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
   const [modelToCreate, setModelToCreate] = useState<string | null>(null);
   const [precheckStatus, setPrecheckStatus] = useState<Record<string, string>>({});
   const [releaseConfirmation, setReleaseConfirmation] = useState(false);
-
-  // Dashboard guard alert
   const [dashboardValidationAlert, setDashboardValidationAlert] = useState(false);
   const [dashboardValidationAlertMsg, setDashboardValidationAlertMsg] = useState("");
-
   const [globalFillField, setGlobalFillField] = useState<string>("");
   const [globalFillValue, setGlobalFillValue] = useState<string>("");
 
@@ -121,8 +119,13 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
     resolver: zodResolver(formSchema),
     defaultValues: { releases: [initialFormValues] }
   });
+
+  // Destructure form methods correctly
+  // +++ THIS IS THE FIX +++
+  const { control, watch, setValue, getValues, clearErrors, trigger } = form; // Added 'watch' back
+
   const { fields, append, remove, replace } = useFieldArray({
-    control: form.control,
+    control,
     name: "releases"
   });
 
@@ -156,7 +159,7 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
 
   const handleImport = async () => {
     if (!confluenceUrl) {
-      toast({ variant: "destructive", title: "URL Required" });
+      toast({ variant: "destructive", title: "URL Required", description: "Please enter a Confluence URL." });
       return;
     }
     setIsImporting(true);
@@ -171,13 +174,15 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
           ...initialFormValues,
           ...model,
           releaseTarget: releaseTarget || "",
-          labels
+          labels: labels || model.labels || initialFormValues.labels,
+          profile: model.profile || initialFormValues.profile,
+          selected: true,
         }));
         replace(newReleases);
-        form.clearErrors();
-        toast({ title: "Import Successful", description: `Imported ${newReleases.length} models.` });
+        clearErrors();
+        toast({ title: "Import Successful", description: `Imported ${newReleases.length} models for ${releaseTarget || 'unknown release'}.` });
       } else {
-        throw new Error("No models found.");
+        throw new Error("No valid models found in the Confluence page table.");
       }
     } catch (e: any) {
       toast({ variant: "destructive", title: "Import Error", description: e.message });
@@ -186,138 +191,100 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
     }
   };
 
+  // Original width calculation
   const getFieldClass = (fieldName: string) =>
     ({
       "w-60": fieldName === "modelName" || fieldName === "monitorLink",
       "w-40": fieldName === "owner",
       "w-20": fieldName === "cs",
       "w-64": fieldName === "labels",
-      "w-48": ["branch", "miqBranch", "multibox"].includes(fieldName),
+      "w-48": ["branch", "miqBranch", "multibox", "appTag"].includes(fieldName),
       "w-32": fieldName === "releaseTarget"
     }[fieldName] || "w-48");
 
   const handleGlobalFill = () => {
     if (!globalFillField) {
-      toast({
-        variant: "destructive",
-        title: "Field Not Selected",
-        description: "Please select a field to fill."
-      });
+      toast({ variant: "destructive", title: "Field Not Selected", description: "Please select a field to fill." });
       return;
     }
-
-    const currentReleases = form.getValues().releases;
+    const currentReleases = getValues().releases;
     let filledCount = 0;
-
     currentReleases.forEach((release, index) => {
       if (release.selected) {
-        form.setValue(`releases.${index}.${globalFillField as keyof ModelRelease}`, globalFillValue);
+        setValue(`releases.${index}.${globalFillField as keyof ModelRelease}`, globalFillValue);
         filledCount++;
       }
     });
-
     if (filledCount > 0) {
-      toast({
-        title: "Batch Edit Successful",
-        description: `Updated ${filledCount} selected rows.`
-      });
+      toast({ title: "Batch Edit Successful", description: `Updated '${tableHeaders.find(h => h.key === globalFillField)?.label || globalFillField}' for ${filledCount} selected rows.` });
     } else {
-      toast({
-        variant: "destructive",
-        title: "No Rows Selected",
-        description: "Please select at least one row to fill."
-      });
+      toast({ variant: "destructive", title: "No Rows Selected", description: "Please select at least one row to fill." });
     }
   };
 
   const handleGlobalClear = () => {
     if (!globalFillField) {
-      toast({
-        variant: "destructive",
-        title: "Field Not Selected",
-        description: "Please select a field to clear."
-      });
+      toast({ variant: "destructive", title: "Field Not Selected", description: "Please select a field to clear." });
       return;
     }
-
-    const currentReleases = form.getValues().releases;
+    const currentReleases = getValues().releases;
     let clearedCount = 0;
-
     currentReleases.forEach((release, index) => {
       if (release.selected) {
-        form.setValue(`releases.${index}.${globalFillField as keyof ModelRelease}`, "");
+        setValue(`releases.${index}.${globalFillField as keyof ModelRelease}`, "");
         clearedCount++;
       }
     });
-
     if (clearedCount > 0) {
-      toast({
-        title: "Batch Edit Successful",
-        description: `Cleared field for ${clearedCount} selected rows.`
-      });
+      toast({ title: "Batch Edit Successful", description: `Cleared '${tableHeaders.find(h => h.key === globalFillField)?.label || globalFillField}' for ${clearedCount} selected rows.` });
     } else {
-      toast({
-        variant: "destructive",
-        title: "No Rows Selected",
-        description: "Please select at least one row to clear."
-      });
+      toast({ variant: "destructive", title: "No Rows Selected", description: "Please select at least one row to clear." });
     }
   };
 
-  /**
-   * Unified dashboard initialization guard using server-side helper.
-   * Returns true if OK to proceed, otherwise shows alert and returns false.
-   */
   const ensureDashboardInitialized = async (
     selectedReleases: ModelRelease[],
     actionLabel: string
   ): Promise<boolean> => {
     const releaseTarget = selectedReleases[0]?.releaseTarget;
     if (!releaseTarget) {
-      setDashboardValidationAlertMsg(
-        "Release Target missing. Please fill 'Release Target' for selected models before triggering jobs."
-      );
+      setDashboardValidationAlertMsg("Release Target missing. Please fill 'Release Target' for selected models before triggering jobs.");
       setDashboardValidationAlert(true);
       return false;
     }
     try {
       const ready = await isDashboardInitializedForRelease(releaseTarget);
       if (!ready) {
-        setDashboardValidationAlertMsg(
-          `Dashboard is not initialized for release: ${releaseTarget}. Please initialize the dashboard first. (${actionLabel} blocked)`
-        );
+        setDashboardValidationAlertMsg(`Dashboard not initialized for release: ${releaseTarget}. Please initialize the release first via the 'Initialize Release' button. (${actionLabel} blocked)`);
         setDashboardValidationAlert(true);
         return false;
       }
       return true;
     } catch (e: any) {
-      setDashboardValidationAlertMsg(
-        `Dashboard check failed: ${e.message}. (${actionLabel} blocked until resolved)`
-      );
+      setDashboardValidationAlertMsg(`Dashboard check failed: ${e.message}. (${actionLabel} blocked until resolved)`);
       setDashboardValidationAlert(true);
       return false;
     }
   };
 
   // --- Main Submit Handler ---
-  const handleSubmit = async (type: 'PRECHECK' | 'RELEASE' | 'POSTCHECK' | 'DASHBOARD') => {
-    const formValues = form.getValues();
+  const handleSubmit = async (type: 'PRECHECK' | 'RELEASE' | 'POSTCHECK' | 'INITIALIZE_RELEASE') => {
+    const formValues = getValues();
     const selectedReleases = formValues.releases.filter(r => r.selected);
 
-    if (type === 'DASHBOARD') {
+    if (type === 'INITIALIZE_RELEASE') {
       const releaseTarget = selectedReleases[0]?.releaseTarget;
       if (selectedReleases.length === 0 || !releaseTarget) {
-        setDashboardValidationAlertMsg(
-          "Please add models to the release queue and ensure the 'Release Target' field is filled for selected models before initiating a dashboard."
-        );
+        setDashboardValidationAlertMsg("Please select models and ensure 'Release Target' is filled before initializing the release setup.");
         setDashboardValidationAlert(true);
         return;
       }
     }
 
-    await form.trigger();
+    await trigger();
+
     if (selectedReleases.length === 0) {
-      toast({ variant: "destructive", title: "No Models Selected" });
+      toast({ variant: "destructive", title: "No Models Selected", description: "Please select at least one model row using the checkbox." });
       return;
     }
 
@@ -326,7 +293,7 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
       toast({
         variant: "destructive",
         title: "Invalid Models Found",
-        description: `Add these models before submitting: ${invalidModels.map(r => r.modelName).join(', ')}.`
+        description: `The following selected models are not recognized: ${invalidModels.map(r => r.modelName).join(', ')}. Please add them first or correct the names.`
       });
       return;
     }
@@ -335,18 +302,14 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
     if (!selectedReleases.every(r => r.releaseTarget === firstReleaseId)) {
       toast({
         variant: "destructive",
-        title: "Multiple Release IDs",
-        description: "All selected models must have the same Release Target for a batch submission."
+        title: "Multiple Release Targets",
+        description: "All selected models must have the same Release Target for a batch submission or initialization."
       });
       return;
     }
 
-    // For any Jenkins-triggering path (PRECHECK, RELEASE, POSTCHECK), ensure dashboard initialized
-    if (type !== 'DASHBOARD') {
-      const actionLabel =
-        type === 'PRECHECK' ? 'Pre-checks'
-          : type === 'RELEASE' ? 'Release Jobs'
-          : 'Post-checks';
+    if (type === 'PRECHECK' || type === 'RELEASE' || type === 'POSTCHECK') {
+      const actionLabel = type === 'PRECHECK' ? 'Pre-checks' : type === 'RELEASE' ? 'Release Jobs' : 'Post-checks';
       const ok = await ensureDashboardInitialized(selectedReleases, actionLabel);
       if (!ok) return;
     }
@@ -362,29 +325,27 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
     await executeSubmission(type);
   };
 
-  const executeSubmission = async (type: 'PRECHECK' | 'RELEASE' | 'POSTCHECK' | 'DASHBOARD') => {
-    const isSubmitting = isSubmittingPrecheck || isSubmittingRelease || isSubmittingPostcheck || isInitiatingDashboard;
+  // --- Execute Submission ---
+  const executeSubmission = async (type: 'PRECHECK' | 'RELEASE' | 'POSTCHECK' | 'INITIALIZE_RELEASE') => {
+    const isSubmitting = isSubmittingPrecheck || isSubmittingRelease || isSubmittingPostcheck || isInitializingRelease;
     if (isSubmitting) return;
 
     if (type === 'PRECHECK') setIsSubmittingPrecheck(true);
     else if (type === 'RELEASE') setIsSubmittingRelease(true);
     else if (type === 'POSTCHECK') setIsSubmittingPostcheck(true);
-    else if (type === 'DASHBOARD') setIsInitiatingDashboard(true);
+    else if (type === 'INITIALIZE_RELEASE') setIsInitializingRelease(true);
 
-    const selectedReleases = form.getValues().releases.filter(r => r.selected);
-    const firstReleaseId = selectedReleases[0].releaseTarget;
+    const selectedReleases = getValues().releases.filter(r => r.selected);
+    const firstReleaseId = selectedReleases[0]?.releaseTarget || "unknown";
     const payload = { releases: selectedReleases };
 
     try {
       if (type === 'PRECHECK') {
         const result = await triggerPrecheckJobsAction(payload);
         if (!result.success) {
-          toast({ variant: "destructive", title: "Pre-check Blocked", description: result.message });
+          toast({ variant: "destructive", title: `Pre-check Submit Failed for ${firstReleaseId}`, description: result.message });
         } else {
-          toast({
-            title: "Pre-checks Triggered",
-            description: `Validation jobs started for ${selectedReleases.length} models.`
-          });
+          toast({ title: `Pre-checks Triggered for ${firstReleaseId}`, description: `Jobs started for ${selectedReleases.length} models. ${result.message}` });
           const modelNames = selectedReleases.map(r => r.modelName);
           const statuses = await getPrecheckStatusForModels(modelNames, firstReleaseId);
           setPrecheckStatus(statuses);
@@ -392,119 +353,102 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
       } else if (type === 'RELEASE') {
         const result = await triggerReleaseJobsAction(payload);
         if (!result.success) {
-          toast({ variant: "destructive", title: "Release Blocked", description: result.message });
+          toast({ variant: "destructive", title: `Release Submit Failed for ${firstReleaseId}`, description: result.message });
         } else {
-          toast({
-            title: "Release Jobs Triggered",
-            description: `Release jobs started for ${selectedReleases.length} models.`
-          });
+          toast({ title: `Release Jobs Triggered for ${firstReleaseId}`, description: `Jobs started for ${selectedReleases.length} models. ${result.message}` });
           onSubmission(firstReleaseId);
         }
       } else if (type === 'POSTCHECK') {
-        // Placeholder: No server action implemented yet, still guarded earlier
-        toast({
-          title: "Post-checks Triggered",
-          description: `Post-check jobs started for ${selectedReleases.length} models. (Placeholder)`
-        });
-      } else if (type === 'DASHBOARD') {
-        const result = await initiateDashboardAction(selectedReleases, "billaa-cerebras");
+        toast({ title: `[WIP] Post-checks Triggered for ${firstReleaseId}`, description: `Post-check jobs simulation for ${selectedReleases.length} models.` });
+      } else if (type === 'INITIALIZE_RELEASE') {
+        // Call the combined server action
+        const result = await initializeReleaseSetupAction(selectedReleases);
         if (result.success) {
-          toast({ title: "Dashboard Initiated", description: result.message });
+          toast({ title: `Release Initialized Successfully for ${firstReleaseId}`, description: result.message });
         } else {
-          throw new Error(result.message);
+          toast({ variant: "destructive", title: `Release Initialization Failed for ${firstReleaseId}`, description: result.message || "An unknown error occurred during setup." });
         }
       }
     } catch (e: any) {
-      toast({ variant: "destructive", title: "Action Failed", description: e.message });
+      toast({ variant: "destructive", title: `${type} Action Failed`, description: e.message || "An unexpected network or server error occurred." });
     } finally {
       if (type === 'PRECHECK') setIsSubmittingPrecheck(false);
       else if (type === 'RELEASE') setIsSubmittingRelease(false);
       else if (type === 'POSTCHECK') setIsSubmittingPostcheck(false);
-      else if (type === 'DASHBOARD') setIsInitiatingDashboard(false);
+      else if (type === 'INITIALIZE_RELEASE') setIsInitializingRelease(false);
       setReleaseConfirmation(false);
     }
   };
 
-  const editableFields = tableHeaders.filter(h => h.isEditable);
-  const isAnyJobRunning =
-    isSubmittingPrecheck || isSubmittingRelease || isSubmittingPostcheck || isInitiatingDashboard;
+  // Filter out the 'selected' pseudo-header for batch edit options
+  const editableFields = tableHeaders.filter(h => h.isEditable); // No isCheckbox check needed if 'selected' isn't in headers
+  const isAnyJobRunning = isSubmittingPrecheck || isSubmittingRelease || isSubmittingPostcheck || isInitializingRelease;
 
   return (
     <>
-      {/* Add New Model Dialog */}
+      {/* --- Dialogs (No Changes) --- */}
       <AlertDialog open={!!modelToCreate} onOpenChange={(open) => !open && setModelToCreate(null)}>
-        <AlertDialogContent>
+         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Add New Model?</AlertDialogTitle>
             <AlertDialogDescription>
-              Add <strong className="text-foreground">{modelToCreate}</strong> to the permanent list of models?
+              The model <strong className="text-foreground">{modelToCreate}</strong> is not in the list. Add it permanently?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmAddNewModel}>Continue</AlertDialogAction>
+            <AlertDialogCancel disabled={isAnyJobRunning}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmAddNewModel} disabled={isAnyJobRunning}>Add Model</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Release Confirmation Dialog */}
       <AlertDialog open={releaseConfirmation} onOpenChange={setReleaseConfirmation}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Pre-checks Not Passed</AlertDialogTitle>
+            <AlertDialogTitle>Confirm Release Submission</AlertDialogTitle>
             <AlertDialogDescription>
-              Some selected models have not passed the pre-check validation. Submitting them may result in a failed
-              release. Are you sure you want to proceed?
+              Some selected models have not passed pre-checks or their status is unknown. Submitting them might lead to failures. Are you sure you want to trigger the release jobs?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => executeSubmission('RELEASE')}>Submit Anyway</AlertDialogAction>
+            <AlertDialogCancel disabled={isAnyJobRunning}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => executeSubmission('RELEASE')} disabled={isAnyJobRunning}>Submit Anyway</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Dashboard Guard Alert */}
       <AlertDialog open={dashboardValidationAlert} onOpenChange={setDashboardValidationAlert}>
-        <AlertDialogContent>
+       <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Dashboard Not Initialized</AlertDialogTitle>
+            <AlertDialogTitle>Action Blocked</AlertDialogTitle>
             <AlertDialogDescription>
               {dashboardValidationAlertMsg}
             </AlertDialogDescription>
           </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogAction onClick={() => setDashboardValidationAlert(false)}>OK</AlertDialogAction>
-            </AlertDialogFooter>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => setDashboardValidationAlert(false)}>OK</AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Confluence Import */}
+      {/* --- Form Sections (No structural changes) --- */}
       <Card>
         <CardHeader>
-          <CardTitle>Confluence Import</CardTitle>
-          <CardDescription>Paste a Confluence URL to populate the release queue.</CardDescription>
+          <CardTitle>Release Test Plan Import</CardTitle>
+          <CardDescription>Paste a Release Test plan to populate the release queue.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex w-full items-center space-x-2">
             <Input
               type="url"
-              placeholder="https://..."
+              placeholder="https://your-confluence-instance/wiki/spaces/.../pages/..."
               value={confluenceUrl}
               onChange={(e) => setConfluenceUrl(e.target.value)}
-              disabled={isImporting}
+              disabled={isImporting || isAnyJobRunning}
             />
-            <Button type="button" onClick={handleImport} disabled={isImporting}>
-              {isImporting ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Importing...
-                </>
-              ) : (
-                <>
-                  <FileInput className="mr-2 h-4 w-4" /> Import
-                </>
-              )}
+            <Button type="button" onClick={handleImport} disabled={isImporting || isAnyJobRunning || !confluenceUrl}>
+              {isImporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileInput className="mr-2 h-4 w-4" />}
+              Import
             </Button>
           </div>
         </CardContent>
@@ -512,50 +456,54 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
 
       <Separator className="my-6" />
 
-      {/* Batch Edit */}
       <Card>
         <CardHeader>
           <CardTitle>Batch Edit</CardTitle>
-          <CardDescription>Select a field and an action to apply to all checked rows below.</CardDescription>
+          <CardDescription>Apply a value to a specific field for all currently checked rows below.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex w-full items-center space-x-2">
-            <Select value={globalFillField} onValueChange={setGlobalFillField}>
-              <SelectTrigger className="w-[240px]">
-                <SelectValue placeholder="Select a field" />
+          <div className="flex flex-wrap items-center gap-2">
+            <Select value={globalFillField} onValueChange={setGlobalFillField} disabled={isAnyJobRunning}>
+              <SelectTrigger className="w-full sm:w-[240px]">
+                <SelectValue placeholder="Select field to edit..." />
               </SelectTrigger>
               <SelectContent>
-                {editableFields.map(field => (
+                {editableFields.map(field =>
                   <SelectItem key={field.key} value={field.key}>{field.label}</SelectItem>
-                ))}
+                )}
               </SelectContent>
             </Select>
             <Input
-              placeholder="Enter value to fill"
+              className="flex-1 min-w-[200px]"
+              placeholder="Enter value to apply..."
               value={globalFillValue}
               onChange={(e) => setGlobalFillValue(e.target.value)}
+              disabled={!globalFillField || isAnyJobRunning}
             />
-            <Button onClick={handleGlobalFill}>
-              <Edit className="mr-2 h-4 w-4" /> Fill
-            </Button>
-            <Button variant="outline" onClick={handleGlobalClear}>
-              <XCircle className="mr-2 h-4 w-4" /> Clear
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={handleGlobalFill} disabled={!globalFillField || isAnyJobRunning}>
+                <Edit className="mr-2 h-4 w-4" /> Fill
+              </Button>
+              <Button variant="outline" onClick={handleGlobalClear} disabled={!globalFillField || isAnyJobRunning}>
+                <XCircle className="mr-2 h-4 w-4" /> Clear
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
 
       <Separator className="my-6" />
 
-      {/* Release Queue */}
+      {/* --- Release Queue Table (Original Structure) --- */}
       <Card>
         <CardHeader>
           <CardTitle>Release Queue</CardTitle>
+          <CardDescription>Manage models for release qualification. Use checkboxes to select models for batch actions.</CardDescription>
         </CardHeader>
         <CardContent>
           <Form {...form}>
             <form onSubmit={(e) => e.preventDefault()}>
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto pb-4">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -573,56 +521,79 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {fields.map((field, index) => (
+                     {fields.length === 0 && (
+                       <TableRow>
+                         <TableCell colSpan={tableHeaders.length + 2} className="h-24 text-center text-muted-foreground">
+                           No models added yet. Import from Confluence or add manually.
+                         </TableCell>
+                       </TableRow>
+                     )}
+                    {fields.map((item, index) => (
                       <TableRow
-                        key={field.id}
+                        key={item.id}
                         className={cn(
                           "align-top",
-                          !form.watch(`releases.${index}.selected`) &&
-                            "bg-muted/30 text-muted-foreground"
+                          // +++ THIS IS THE FIX +++
+                          // Use the 'watch' function (now correctly in scope) to get the *current* value
+                          !watch(`releases.${index}.selected`) && "bg-muted/30 text-muted-foreground"
                         )}
                       >
+                        {/* Original Checkbox Cell */}
                         <TableCell className="p-2 pt-4">
                           <FormField
-                            control={form.control}
+                            control={control}
                             name={`releases.${index}.selected`}
                             render={({ field }) => (
                               <FormItem>
                                 <FormControl>
-                                  <Checkbox checked={field.value} onCheckedChange={field.onChange} />
+                                  <Checkbox
+                                    checked={field.value}
+                                    onCheckedChange={field.onChange}
+                                    aria-label={`Select row ${index + 1}`}
+                                   />
                                 </FormControl>
                               </FormItem>
                             )}
                           />
                         </TableCell>
+                        {/* Original Data Cells */}
                         {tableHeaders.map(header => (
                           <TableCell key={header.key} className="p-2">
                             <FormField
-                              control={form.control}
+                              control={control}
                               name={`releases.${index}.${header.key as keyof ModelRelease}`}
                               render={({ field: formField }) => (
                                 <FormItem>
-                                  {header.key === 'modelName' ? (
-                                    <Combobox
-                                      options={models}
-                                      {...formField}
-                                      placeholder="Select or type model"
-                                      allowCustom
-                                      onCustomAdd={handleAddNewModelRequest}
-                                    />
-                                  ) : (
-                                    <FormControl>
-                                      <Input {...formField} readOnly={!header.isEditable} />
-                                    </FormControl>
-                                  )}
-                                  <FormMessage className="text-xs" />
+                                  <FormControl>
+                                    {header.key === 'modelName' ? (
+                                      <Combobox
+                                        options={models}
+                                        {...formField}
+                                        value={formField.value || ""}
+                                        onChange={formField.onChange}
+                                        placeholder="Select or add model"
+                                        searchPlaceholder="Search models..."
+                                        notFoundText="No model found."
+                                        allowCustom
+                                        onCustomAdd={handleAddNewModelRequest}
+                                      />
+                                    ) : (
+                                      <Input
+                                        {...formField}
+                                        value={formField.value ?? ""}
+                                        readOnly={!header.isEditable || isAnyJobRunning}
+                                      />
+                                    )}
+                                  </FormControl>
+                                  <FormMessage className="text-xs text-red-600" />
                                 </FormItem>
                               )}
                             />
                           </TableCell>
                         ))}
+                        {/* Original Delete Cell */}
                         <TableCell className="p-2 pt-3">
-                          <Button variant="ghost" size="icon" onClick={() => remove(index)}>
+                          <Button variant="ghost" size="icon" onClick={() => remove(index)} disabled={isAnyJobRunning}>
                             <Trash2 className="h-5 w-5" />
                           </Button>
                         </TableCell>
@@ -631,42 +602,43 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
                   </TableBody>
                 </Table>
               </div>
+
+              {/* Add Model Button */}
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 className="mt-4"
                 onClick={() => append(initialFormValues)}
+                disabled={isAnyJobRunning}
               >
-                <PlusCircle className="mr-2 h-4 w-4" /> Add Model
+                <PlusCircle className="mr-2 h-4 w-4" /> Add Model Row
               </Button>
-              <div className="flex justify-end mt-8 space-x-4">
+
+              {/* Action Buttons Group */}
+              <div className="flex flex-wrap justify-end mt-8 gap-3">
+                {/* --- UPDATED BUTTON --- */}
                 <Button
                   type="button"
                   variant="outline"
                   size="lg"
-                  onClick={() => handleSubmit('DASHBOARD')}
+                  onClick={() => handleSubmit('INITIALIZE_RELEASE')}
                   disabled={isAnyJobRunning}
+                  title="Initialize dashboard and clone Jenkins job for the selected release target"
                 >
-                  {isInitiatingDashboard ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <LayoutDashboard className="mr-2 h-4 w-4" />
-                  )}
-                  Initialize Dashboard
+                  {isInitializingRelease ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LayoutDashboard className="mr-2 h-4 w-4" />}
+                  Initialize Release {/* <-- Text Changed */}
                 </Button>
+                {/* --- Other Buttons (Unchanged) --- */}
                 <Button
                   type="button"
                   variant="outline"
                   size="lg"
                   onClick={() => handleSubmit('PRECHECK')}
                   disabled={isAnyJobRunning}
+                  title="Run pre-check validation jobs on Jenkins for selected models"
                 >
-                  {isSubmittingPrecheck ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <ShieldQuestion className="mr-2 h-4 w-4" />
-                  )}
+                  {isSubmittingPrecheck ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldQuestion className="mr-2 h-4 w-4" />}
                   Run Pre-checks
                 </Button>
                 <Button
@@ -674,12 +646,9 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
                   size="lg"
                   onClick={() => handleSubmit('RELEASE')}
                   disabled={isAnyJobRunning}
+                  title="Trigger the main release qualification jobs on the release-specific Jenkins job"
                 >
-                  {isSubmittingRelease ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Send className="mr-2 h-4 w-4" />
-                  )}
+                  {isSubmittingRelease ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
                   Trigger Release
                 </Button>
                 <Button
@@ -688,12 +657,9 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
                   size="lg"
                   onClick={() => handleSubmit('POSTCHECK')}
                   disabled={isAnyJobRunning}
+                  title="Run post-release check jobs (if applicable)"
                 >
-                  {isSubmittingPostcheck ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <ClipboardCheck className="mr-2 h-4 w-4" />
-                  )}
+                  {isSubmittingPostcheck ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ClipboardCheck className="mr-2 h-4 w-4" />}
                   Run Post-checks
                 </Button>
               </div>
