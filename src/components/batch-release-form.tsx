@@ -20,12 +20,18 @@ import {
   FileInput,
   Server,
   ShieldQuestion,
-  BoxSelect,
+  Blocks,
+  Boxes,
   Link,
   Edit,
   XCircle,
   LayoutDashboard,
-  ClipboardCheck
+  ClipboardCheck,
+  HardDrive,
+  // +++ NEW ICONS +++
+  CheckCircle,
+  Hourglass,
+  AlertCircle 
 } from "lucide-react";
 import { importFromConfluence, type ConfluenceImportResult } from "@/app/actions";
 import { getModels, addModel } from "@/app/model-actions";
@@ -33,8 +39,12 @@ import {
   triggerPrecheckJobsAction,
   triggerReleaseJobsAction,
   getPrecheckStatusForModels,
-  initializeReleaseSetupAction, // Use the renamed server action
-  isDashboardInitializedForRelease
+  initializeReleaseSetupAction, // This is now our "check" and "save" action
+  isDashboardInitializedForRelease,
+  editReleaseDashboardAction,
+  cloneJenkinsJobAction,        // <-- Import clone action
+  initializeDashboardAction,  // <-- Import new dashboard action
+  createJiraTicketsAction     // <-- Import new Jira action
 } from "@/app/flow-actions";
 import { modelReleaseSchema, type ModelRelease } from "@/lib/schemas";
 import { Button } from "@/components/ui/button";
@@ -57,6 +67,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle
 } from "@/components/ui/alert-dialog";
+// +++ Import Dialog for the progress pop-up +++
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter
+} from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const formSchema = z.object({
@@ -65,34 +84,64 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-// Original table headers structure
+// ... (tableHeaders and initialFormValues are unchanged from your file) ...
 const tableHeaders = [
   { key: "modelName", label: "Model Name", required: true, icon: Package, isEditable: true },
-  { key: "owner", label: "Owner", required: false, icon: User, isEditable: true },
+  { key: "owner", label: "Owner", required: true, icon: User, isEditable: true },
   { key: "cs", label: "CS", required: false, icon: Server, isEditable: true },
   { key: "branch", label: "Branch", required: true, icon: GitBranch, isEditable: true },
   { key: "miqBranch", label: "MIQ Branch", required: true, icon: GitMerge, isEditable: true },
   { key: "appTag", label: "App-Tag", required: true, icon: Tag, isEditable: true },
-  { key: "multibox", label: "MULTIBOX", required: true, icon: BoxSelect, isEditable: true },
+  { key: "multibox", label: "MULTIBOX", required: true, icon: Boxes, isEditable: true },
+  { key: "usernoode", label: "Usernode", required: true, icon: Blocks, isEditable: true }, 
   { key: "monitorLink", label: "Monitor Link", required: false, icon: Link, isEditable: true },
   { key: "labels", label: "Labels", required: true, icon: Tags, isEditable: true },
   { key: "releaseTarget", label: "Release Target", required: true, icon: Rocket, isEditable: true },
 ];
 
 const initialFormValues: ModelRelease = {
-  selected: true,
-  modelName: "",
-  branch: "",
-  appTag: "",
-  miqBranch: "main",
-  multibox: "dh1",
-  monitorLink: "",
-  profile: "", // Required by schema
-  labels: "",
-  releaseTarget: "",
-  owner: "",
-  cs: ""
+  selected: true, modelName: "", branch: "", appTag: "none", miqBranch: "main",
+  multibox: "dh1", usernoode: "net004-us-sr04.sck2.cerebrascloud.com", 
+  monitorLink: "mohitk-dev:5000", profile: "", labels: "", releaseTarget: "",
+  owner: "", cs: ""
 };
+
+// +++ NEW TYPE for Progress State +++
+type TaskStatus = 'pending' | 'loading' | 'success' | 'failed';
+interface TaskState {
+  status: TaskStatus;
+  message: string;
+}
+interface ProgressState {
+  dashboard: TaskState;
+  jenkins: TaskState;
+  jira: TaskState;
+  save: TaskState;
+}
+
+// +++ NEW HELPER: Get initial progress state +++
+const getInitialProgressState = (): ProgressState => ({
+  dashboard: { status: 'pending', message: 'Initialize Dashboard' },
+  jenkins: { status: 'pending', message: 'Clone Jenkins Job' },
+  jira: { status: 'pending', message: 'Create Jira Tickets' },
+  save: { status: 'pending', message: 'Save Release Links' },
+});
+
+// +++ NEW HELPER: Render status icon +++
+const ProgressStatusIcon = ({ status }: { status: TaskStatus }) => {
+  switch (status) {
+    case 'loading':
+      return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />;
+    case 'success':
+      return <CheckCircle className="h-4 w-4 text-green-500" />;
+    case 'failed':
+      return <AlertCircle className="h-4 w-4 text-destructive" />;
+    case 'pending':
+    default:
+      return <Hourglass className="h-4 w-4 text-muted-foreground" />;
+  }
+};
+
 
 interface BatchReleaseFormProps {
   onSubmission: (releaseId: string) => void;
@@ -102,8 +151,9 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
   const [isSubmittingPrecheck, setIsSubmittingPrecheck] = useState(false);
   const [isSubmittingRelease, setIsSubmittingRelease] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const [isInitializingRelease, setIsInitializingRelease] = useState(false); // Renamed state
+  const [isInitializingRelease, setIsInitializingRelease] = useState(false);
   const [isSubmittingPostcheck, setIsSubmittingPostcheck] = useState(false);
+  const [isSubmittingDashboardEdit, setIsSubmittingDashboardEdit] = useState(false);
   const [confluenceUrl, setConfluenceUrl] = useState("");
   const { toast } = useToast();
   const [models, setModels] = useState<{ value: string; label: string }[]>([]);
@@ -112,23 +162,26 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
   const [releaseConfirmation, setReleaseConfirmation] = useState(false);
   const [dashboardValidationAlert, setDashboardValidationAlert] = useState(false);
   const [dashboardValidationAlertMsg, setDashboardValidationAlertMsg] = useState("");
+  const [showEditConfirmation, setShowEditConfirmation] = useState(false);
   const [globalFillField, setGlobalFillField] = useState<string>("");
   const [globalFillValue, setGlobalFillValue] = useState<string>("");
+  
+  const [showProgressDialog, setShowProgressDialog] = useState(false);
+  const [progress, setProgress] = useState<ProgressState>(getInitialProgressState());
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: { releases: [initialFormValues] }
   });
 
-  // Destructure form methods correctly
-  // +++ THIS IS THE FIX +++
-  const { control, watch, setValue, getValues, clearErrors, trigger } = form; // Added 'watch' back
+  const { control, watch, setValue, getValues, clearErrors, trigger } = form;
 
   const { fields, append, remove, replace } = useFieldArray({
     control,
     name: "releases"
   });
 
+  // ... (all helper functions like fetchModels, handleAddNewModelRequest, confirmAddNewModel, handleImport, getFieldClass, handleGlobalFill, handleGlobalClear, ensureDashboardInitialized remain UNCHANGED) ...
   const fetchModels = useCallback(async () => {
     try {
       const dbModels = await getModels();
@@ -137,13 +190,8 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
       toast({ variant: "destructive", title: "Error", description: "Could not fetch models." });
     }
   }, [toast]);
-
-  useEffect(() => {
-    fetchModels();
-  }, [fetchModels]);
-
+  useEffect(() => { fetchModels(); }, [fetchModels]);
   const handleAddNewModelRequest = (newModelName: string) => setModelToCreate(newModelName);
-
   const confirmAddNewModel = async () => {
     if (!modelToCreate) return;
     try {
@@ -156,7 +204,6 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
       setModelToCreate(null);
     }
   };
-
   const handleImport = async () => {
     if (!confluenceUrl) {
       toast({ variant: "destructive", title: "URL Required", description: "Please enter a Confluence URL." });
@@ -190,18 +237,15 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
       setIsImporting(false);
     }
   };
-
-  // Original width calculation
   const getFieldClass = (fieldName: string) =>
     ({
       "w-60": fieldName === "modelName" || fieldName === "monitorLink",
       "w-40": fieldName === "owner",
       "w-20": fieldName === "cs",
       "w-64": fieldName === "labels",
-      "w-48": ["branch", "miqBranch", "multibox", "appTag"].includes(fieldName),
+      "w-48": ["branch", "miqBranch", "multibox", "appTag", "usernoode"].includes(fieldName),
       "w-32": fieldName === "releaseTarget"
     }[fieldName] || "w-48");
-
   const handleGlobalFill = () => {
     if (!globalFillField) {
       toast({ variant: "destructive", title: "Field Not Selected", description: "Please select a field to fill." });
@@ -221,7 +265,6 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
       toast({ variant: "destructive", title: "No Rows Selected", description: "Please select at least one row to fill." });
     }
   };
-
   const handleGlobalClear = () => {
     if (!globalFillField) {
       toast({ variant: "destructive", title: "Field Not Selected", description: "Please select a field to clear." });
@@ -241,7 +284,6 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
       toast({ variant: "destructive", title: "No Rows Selected", description: "Please select at least one row to clear." });
     }
   };
-
   const ensureDashboardInitialized = async (
     selectedReleases: ModelRelease[],
     actionLabel: string
@@ -267,8 +309,10 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
     }
   };
 
-  // --- Main Submit Handler ---
+
+  // --- Main Submit Handler (Unchanged) ---
   const handleSubmit = async (type: 'PRECHECK' | 'RELEASE' | 'POSTCHECK' | 'INITIALIZE_RELEASE') => {
+    // ... (This function remains exactly as it was in your working file) ...
     const formValues = getValues();
     const selectedReleases = formValues.releases.filter(r => r.selected);
 
@@ -280,14 +324,11 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
         return;
       }
     }
-
     await trigger();
-
     if (selectedReleases.length === 0) {
       toast({ variant: "destructive", title: "No Models Selected", description: "Please select at least one model row using the checkbox." });
       return;
     }
-
     const invalidModels = selectedReleases.filter(r => !models.some(m => m.value === r.modelName));
     if (invalidModels.length > 0) {
       toast({
@@ -297,7 +338,6 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
       });
       return;
     }
-
     const firstReleaseId = selectedReleases[0].releaseTarget;
     if (!selectedReleases.every(r => r.releaseTarget === firstReleaseId)) {
       toast({
@@ -307,13 +347,11 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
       });
       return;
     }
-
     if (type === 'PRECHECK' || type === 'RELEASE' || type === 'POSTCHECK') {
       const actionLabel = type === 'PRECHECK' ? 'Pre-checks' : type === 'RELEASE' ? 'Release Jobs' : 'Post-checks';
       const ok = await ensureDashboardInitialized(selectedReleases, actionLabel);
       if (!ok) return;
     }
-
     if (type === 'RELEASE') {
       const modelsWithoutSuccess = selectedReleases.filter(r => precheckStatus[r.modelName] !== 'SUCCESS');
       if (modelsWithoutSuccess.length > 0) {
@@ -321,19 +359,129 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
         return;
       }
     }
-
     await executeSubmission(type);
   };
 
-  // --- Execute Submission ---
+  // --- Edit Dashboard Handler (Unchanged) ---
+  const handleEditDashboard = async () => {
+    // ... (This function remains exactly as it was)
+    setIsSubmittingDashboardEdit(true);
+    const selectedReleases = getValues().releases.filter(r => r.selected);
+    const firstReleaseId = selectedReleases[0]?.releaseTarget || "unknown";
+    try {
+      const result = await editReleaseDashboardAction(selectedReleases);
+      if (result.success) {
+        toast({ title: `Dashboard Edit Successful for ${firstReleaseId}`, description: result.message });
+      } else {
+        throw new Error(result.message || "Failed to edit dashboard.");
+      }
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Edit Failed", description: e.message });
+    } finally {
+      setIsSubmittingDashboardEdit(false);
+    }
+  };
+
+  // +++ The main initialization sequence (MODIFIED) +++
+  const runInitializationSequence = async () => {
+    setIsInitializingRelease(true);
+    setProgress(getInitialProgressState());
+    setShowProgressDialog(true);
+
+    const selectedReleases = getValues().releases.filter(r => r.selected);
+    const releaseTarget = selectedReleases[0]?.releaseTarget;
+    
+    let jenkinsJobUrl = "", jenkinsJobName = "", jiraEpicKey = "", jiraEpicUrl = "";
+
+    try {
+      // Step 0: Check if dashboard exists
+      const checkResult = await initializeReleaseSetupAction(selectedReleases);
+      
+      if (checkResult.alreadyInitialized) {
+        setShowProgressDialog(false);
+        setShowEditConfirmation(true);
+        return;
+      }
+      
+      // Step 1: Initialize Dashboard
+      setProgress(p => ({ ...p, dashboard: { ...p.dashboard, status: 'loading' } }));
+      const dashResult = await initializeDashboardAction(selectedReleases);
+      if (!dashResult.success) {
+        throw new Error(`Dashboard Failed: ${dashResult.message}`);
+      }
+      setProgress(p => ({ ...p, dashboard: { status: 'success', message: "Dashboard Initialized." } }));
+
+      // Step 2: Clone Jenkins Job
+      setProgress(p => ({ ...p, jenkins: { ...p.jenkins, status: 'loading' } }));
+      const jenkinsResult = await cloneJenkinsJobAction({ releaseTarget: releaseTarget! });
+      if (!jenkinsResult.success) {
+        throw new Error(`Jenkins Failed: ${jenkinsResult.message}`);
+      }
+      jenkinsJobName = jenkinsResult.newJobName || "";
+      jenkinsJobUrl = jenkinsResult.newJobUrl || "";
+      setProgress(p => ({ ...p, jenkins: { status: 'success', message: `${jenkinsJobName} created.` } }));
+
+      // Step 3: Create Jira Tickets
+      setProgress(p => ({ ...p, jira: { ...p.jira, status: 'loading' } }));
+      const jiraResult = await createJiraTicketsAction(selectedReleases, releaseTarget!);
+      if (jiraResult.epicKey) {
+        jiraEpicKey = jiraResult.epicKey;
+        // Use the hardcoded prefix as requested.
+        jiraEpicUrl = `https://cerebras.atlassian.net/browse/${jiraEpicKey}`;
+      }
+      if (!jiraResult.success) {
+        setProgress(p => ({ ...p, jira: { status: 'failed', message: jiraResult.message } }));
+      } else {
+        setProgress(p => ({ ...p, jira: { status: 'success', message: jiraResult.message } }));
+      }
+
+      // Step 4: Save all links to DB
+      setProgress(p => ({ ...p, save: { ...p.save, status: 'loading' } }));
+      const saveResult = await initializeReleaseSetupAction(selectedReleases, {
+        jenkinsJobUrl, jenkinsJobName, jiraEpicKey, jiraEpicUrl
+      });
+      if (!saveResult.success) {
+        throw new Error(`Save Failed: ${saveResult.message}`);
+      }
+      setProgress(p => ({ ...p, save: { status: 'success', message: "Links saved." } }));
+
+      toast({ title: "Initialization Complete", description: "All steps finished successfully." });
+
+      // +++ THIS IS THE NEW LINE +++
+      // On full success, call onSubmission to switch tabs
+      onSubmission(releaseTarget!);
+      
+    } catch (error: any) {
+      console.error("Initialization sequence failed:", error);
+      setProgress(p => {
+        const newState = { ...p };
+        if (p.dashboard.status === 'loading') newState.dashboard = { status: 'failed', message: error.message };
+        else if (p.jenkins.status === 'loading') newState.jenkins = { status: 'failed', message: error.message };
+        else if (p.jira.status === 'loading') newState.jira = { status: 'failed', message: error.message };
+        else if (p.save.status === 'loading') newState.save = { status: 'failed', message: error.message };
+        return newState;
+      });
+      toast({ variant: "destructive", title: "Initialization Failed", description: error.message });
+    } finally {
+      setIsInitializingRelease(false);
+      // Close the dialog automatically *only* on success
+      if (progress.save.status === 'success' || progress.jira.status === 'success') {
+         setShowProgressDialog(false);
+      }
+      // If it failed, the dialog stays open for the user to see the error.
+    }
+  };
+
+
+  // --- Execute Submission (MODIFIED) ---
   const executeSubmission = async (type: 'PRECHECK' | 'RELEASE' | 'POSTCHECK' | 'INITIALIZE_RELEASE') => {
-    const isSubmitting = isSubmittingPrecheck || isSubmittingRelease || isSubmittingPostcheck || isInitializingRelease;
+    const isSubmitting = isSubmittingPrecheck || isSubmittingRelease || isSubmittingPostcheck || isInitializingRelease || isSubmittingDashboardEdit;
     if (isSubmitting) return;
 
     if (type === 'PRECHECK') setIsSubmittingPrecheck(true);
     else if (type === 'RELEASE') setIsSubmittingRelease(true);
     else if (type === 'POSTCHECK') setIsSubmittingPostcheck(true);
-    else if (type === 'INITIALIZE_RELEASE') setIsInitializingRelease(true);
+    // isInitializingRelease is handled by runInitializationSequence
 
     const selectedReleases = getValues().releases.filter(r => r.selected);
     const firstReleaseId = selectedReleases[0]?.releaseTarget || "unknown";
@@ -341,52 +489,46 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
 
     try {
       if (type === 'PRECHECK') {
+        // ... (this logic is unchanged)
         const result = await triggerPrecheckJobsAction(payload);
-        if (!result.success) {
-          toast({ variant: "destructive", title: `Pre-check Submit Failed for ${firstReleaseId}`, description: result.message });
-        } else {
-          toast({ title: `Pre-checks Triggered for ${firstReleaseId}`, description: `Jobs started for ${selectedReleases.length} models. ${result.message}` });
+        if (!result.success) { toast({ variant: "destructive", title: `Pre-check Submit Failed for ${firstReleaseId}`, description: result.message }); }
+        else { toast({ title: `Pre-checks Triggered for ${firstReleaseId}`, description: `Jobs started for ${selectedReleases.length} models. ${result.message}` });
           const modelNames = selectedReleases.map(r => r.modelName);
           const statuses = await getPrecheckStatusForModels(modelNames, firstReleaseId);
           setPrecheckStatus(statuses);
         }
       } else if (type === 'RELEASE') {
+        // ... (this logic is unchanged)
         const result = await triggerReleaseJobsAction(payload);
-        if (!result.success) {
-          toast({ variant: "destructive", title: `Release Submit Failed for ${firstReleaseId}`, description: result.message });
-        } else {
-          toast({ title: `Release Jobs Triggered for ${firstReleaseId}`, description: `Jobs started for ${selectedReleases.length} models. ${result.message}` });
+        if (!result.success) { toast({ variant: "destructive", title: `Release Submit Failed for ${firstReleaseId}`, description: result.message }); }
+        else { toast({ title: `Release Jobs Triggered for ${firstReleaseId}`, description: `Jobs started for ${selectedReleases.length} models. ${result.message}` });
           onSubmission(firstReleaseId);
         }
       } else if (type === 'POSTCHECK') {
+        // ... (this logic is unchanged)
         toast({ title: `[WIP] Post-checks Triggered for ${firstReleaseId}`, description: `Post-check jobs simulation for ${selectedReleases.length} models.` });
+      
       } else if (type === 'INITIALIZE_RELEASE') {
-        // Call the combined server action
-        const result = await initializeReleaseSetupAction(selectedReleases);
-        if (result.success) {
-          toast({ title: `Release Initialized Successfully for ${firstReleaseId}`, description: result.message });
-        } else {
-          toast({ variant: "destructive", title: `Release Initialization Failed for ${firstReleaseId}`, description: result.message || "An unknown error occurred during setup." });
-        }
+        // +++ MODIFIED: Call the new sequence function +++
+        await runInitializationSequence();
       }
     } catch (e: any) {
       toast({ variant: "destructive", title: `${type} Action Failed`, description: e.message || "An unexpected network or server error occurred." });
     } finally {
+      // Reset states *except* for initialize, which is handled by its own sequence
       if (type === 'PRECHECK') setIsSubmittingPrecheck(false);
       else if (type === 'RELEASE') setIsSubmittingRelease(false);
       else if (type === 'POSTCHECK') setIsSubmittingPostcheck(false);
-      else if (type === 'INITIALIZE_RELEASE') setIsInitializingRelease(false);
       setReleaseConfirmation(false);
     }
   };
 
-  // Filter out the 'selected' pseudo-header for batch edit options
-  const editableFields = tableHeaders.filter(h => h.isEditable); // No isCheckbox check needed if 'selected' isn't in headers
-  const isAnyJobRunning = isSubmittingPrecheck || isSubmittingRelease || isSubmittingPostcheck || isInitializingRelease;
+  const editableFields = tableHeaders.filter(h => h.isEditable);
+  const isAnyJobRunning = isSubmittingPrecheck || isSubmittingRelease || isSubmittingPostcheck || isInitializingRelease || isSubmittingDashboardEdit;
 
   return (
     <>
-      {/* --- Dialogs (No Changes) --- */}
+      {/* --- Dialogs --- */}
       <AlertDialog open={!!modelToCreate} onOpenChange={(open) => !open && setModelToCreate(null)}>
          <AlertDialogContent>
           <AlertDialogHeader>
@@ -431,7 +573,99 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* --- Form Sections (No structural changes) --- */}
+      <AlertDialog open={showEditConfirmation} onOpenChange={setShowEditConfirmation}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Dashboard Already Initialized</AlertDialogTitle>
+            <AlertDialogDescription>
+              The dashboard for release <strong className="text-foreground">{getValues().releases.find(r => r.selected)?.releaseTarget}</strong> is already set up.
+              <br/><br/>
+              Do you want to update it with the currently selected models?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isAnyJobRunning} onClick={() => setShowEditConfirmation(false)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              disabled={isAnyJobRunning}
+              onClick={() => {
+                setShowEditConfirmation(false);
+                handleEditDashboard();
+              }}
+            >
+              {isSubmittingDashboardEdit ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Yes, Edit Dashboard"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* +++ Progress Dialog +++ */}
+      <Dialog open={showProgressDialog} onOpenChange={(open) => {
+        if (!isInitializingRelease) {
+          setShowProgressDialog(open);
+        }
+      }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Initializing Release: {getValues().releases.find(r => r.selected)?.releaseTarget}</DialogTitle>
+            <DialogDescription>
+              {isInitializingRelease ? "Running initialization tasks. Please wait..." : "Initialization tasks finished."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col space-y-4 py-4">
+            {/* Task 1: Dashboard */}
+            <div className="flex items-start space-x-3">
+              <ProgressStatusIcon status={progress.dashboard.status} />
+              <div className="flex-1">
+                <p className={cn("font-medium", progress.dashboard.status === 'failed' && "text-destructive", progress.dashboard.status === 'success' && "text-green-600")}>
+                  {progress.dashboard.message}
+                </p>
+                {progress.dashboard.status === 'loading' && (<p className="text-sm text-muted-foreground">Creating and populating dashboard...</p>)}
+              </div>
+            </div>
+            {/* Task 2: Jenkins */}
+            <div className="flex items-start space-x-3">
+              <ProgressStatusIcon status={progress.jenkins.status} />
+              <div className="flex-1">
+                <p className={cn("font-medium", progress.jenkins.status === 'failed' && "text-destructive", progress.jenkins.status === 'success' && "text-green-600")}>
+                  {progress.jenkins.message}
+                </p>
+                {progress.jenkins.status === 'loading' && (<p className="text-sm text-muted-foreground">Cloning template job via API...</p>)}
+              </div>
+            </div>
+            {/* Task 3: Jira */}
+            <div className="flex items-start space-x-3">
+              <ProgressStatusIcon status={progress.jira.status} />
+              <div className="flex-1">
+                <p className={cn("font-medium", progress.jira.status === 'failed' && "text-destructive", progress.jira.status === 'success' && "text-green-600")}>
+                  {progress.jira.message}
+                </p>
+                {progress.jira.status === 'loading' && (<p className="text-sm text-muted-foreground">Creating Epic and Tasks...</p>)}
+              </div>
+            </div>
+            {/* Task 4: Save */}
+            <div className="flex items-start space-x-3">
+              <ProgressStatusIcon status={progress.save.status} />
+              <div className="flex-1">
+                <p className={cn("font-medium", progress.save.status === 'failed' && "text-destructive", progress.save.status === 'success' && "text-green-600")}>
+                  {progress.save.message}
+                </p>
+                {progress.save.status === 'loading' && (<p className="text-sm text-muted-foreground">Saving links to database...</p>)}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button 
+              onClick={() => setShowProgressDialog(false)}
+              disabled={isInitializingRelease}
+            >
+              {isInitializingRelease ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Close"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+
+      {/* --- Form Sections (Unchanged) --- */}
       <Card>
         <CardHeader>
           <CardTitle>Release Test Plan Import</CardTitle>
@@ -494,7 +728,7 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
 
       <Separator className="my-6" />
 
-      {/* --- Release Queue Table (Original Structure) --- */}
+      {/* --- Release Queue Table (Unchanged) --- */}
       <Card>
         <CardHeader>
           <CardTitle>Release Queue</CardTitle>
@@ -505,6 +739,7 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
             <form onSubmit={(e) => e.preventDefault()}>
               <div className="overflow-x-auto pb-4">
                 <Table>
+                  {/* ... (Table Header) ... */}
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-12"></TableHead>
@@ -520,6 +755,7 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
                       <TableHead className="w-12"></TableHead>
                     </TableRow>
                   </TableHeader>
+                  {/* ... (Table Body) ... */}
                   <TableBody>
                      {fields.length === 0 && (
                        <TableRow>
@@ -533,12 +769,10 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
                         key={item.id}
                         className={cn(
                           "align-top",
-                          // +++ THIS IS THE FIX +++
-                          // Use the 'watch' function (now correctly in scope) to get the *current* value
                           !watch(`releases.${index}.selected`) && "bg-muted/30 text-muted-foreground"
                         )}
                       >
-                        {/* Original Checkbox Cell */}
+                        {/* Checkbox Cell */}
                         <TableCell className="p-2 pt-4">
                           <FormField
                             control={control}
@@ -556,7 +790,7 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
                             )}
                           />
                         </TableCell>
-                        {/* Original Data Cells */}
+                        {/* Data Cells */}
                         {tableHeaders.map(header => (
                           <TableCell key={header.key} className="p-2">
                             <FormField
@@ -591,7 +825,7 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
                             />
                           </TableCell>
                         ))}
-                        {/* Original Delete Cell */}
+                        {/* Delete Cell */}
                         <TableCell className="p-2 pt-3">
                           <Button variant="ghost" size="icon" onClick={() => remove(index)} disabled={isAnyJobRunning}>
                             <Trash2 className="h-5 w-5" />
@@ -617,19 +851,18 @@ export function BatchReleaseForm({ onSubmission }: BatchReleaseFormProps) {
 
               {/* Action Buttons Group */}
               <div className="flex flex-wrap justify-end mt-8 gap-3">
-                {/* --- UPDATED BUTTON --- */}
                 <Button
                   type="button"
                   variant="outline"
                   size="lg"
                   onClick={() => handleSubmit('INITIALIZE_RELEASE')}
-                  disabled={isAnyJobRunning}
+                  disabled={isAnyJobRunning} 
                   title="Initialize dashboard and clone Jenkins job for the selected release target"
                 >
                   {isInitializingRelease ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LayoutDashboard className="mr-2 h-4 w-4" />}
-                  Initialize Release {/* <-- Text Changed */}
+                  Initialize Release
                 </Button>
-                {/* --- Other Buttons (Unchanged) --- */}
+                {/* ... (Other buttons remain unchanged) ... */}
                 <Button
                   type="button"
                   variant="outline"
