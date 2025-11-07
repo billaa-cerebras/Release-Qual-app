@@ -13,12 +13,15 @@ import {
   Beaker,
   Activity,
   Clock,
-  Monitor
+  Monitor,
+  Ticket,
+  Package
 } from "lucide-react";
-import { getJobsByReleaseId, checkJenkinsJobStatusAction } from "@/app/flow-actions";
+import { getJobsByReleaseId, checkJenkinsJobStatusAction, getReleaseLinks } from "@/app/flow-actions";
 import { type IJob, JobType, JobStatus, PrecheckStatus } from "@/models/Job";
+import { type IRelease } from "@/models/Release";
 import { useToast } from "@/hooks/use-toast";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -26,6 +29,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import Link from "next/link";
+import { Separator } from "@/components/ui/separator";
 
 interface SubmissionDetailsProps {
   initialReleaseId?: string;
@@ -116,10 +120,13 @@ export function SubmissionDetails({ initialReleaseId = "" }: SubmissionDetailsPr
 
   const [releaseJobs, setReleaseJobs] = useState<IJob[]>([]);
   const [precheckJobs, setPrecheckJobs] = useState<IJob[]>([]);
+  const [releaseLinks, setReleaseLinks] = useState<IRelease | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [pollInactiveCount, setPollInactiveCount] = useState(1);
   const { toast } = useToast();
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Poll function triggers a backend status update AND then fetches jobs
   const handleRefresh = useCallback(
     async (id: string, isAutoPoll = false) => {
       if (!id) return;
@@ -127,30 +134,40 @@ export function SubmissionDetails({ initialReleaseId = "" }: SubmissionDetailsPr
 
       try {
         await checkJenkinsJobStatusAction({ releaseId: id });
-        const [releases, prechecks] = await Promise.all([
+        // Optional: Slight delay to wait for backend to write DB
+        // await new Promise((res) => setTimeout(res, 200));
+        const [releases, prechecks, links] = await Promise.all([
           getJobsByReleaseId(id, "RELEASE"),
-          getJobsByReleaseId(id, "PRECHECK")
+          getJobsByReleaseId(id, "PRECHECK"),
+          getReleaseLinks(id)
         ]);
         setReleaseJobs(releases);
         setPrecheckJobs(prechecks);
+        setReleaseLinks(links);
 
         if (!isAutoPoll) {
           toast({ title: "Details Refreshed", description: `Fetched latest status for '${id}'.` });
         }
 
-        const hasActiveJobs = [...releases, ...prechecks].some((job) =>
-          !isTerminalStatus(job.type === "RELEASE" ? job.status : job.precheckStatus)
+        // --- Improved: Count non-terminal polls ---
+        const hasActiveJobs = [...releases, ...prechecks].some(
+          (job) => !isTerminalStatus(job.type === "RELEASE" ? job.status : job.precheckStatus)
         );
 
-        if (!hasActiveJobs && pollingIntervalRef.current) {
-          clearInterval(pollingIntervalRef.current);
-          pollingIntervalRef.current = null;
+        if (isAutoPoll) {
+          if (!hasActiveJobs) {
+            setPollInactiveCount((count) => count + 1);
+          } else {
+            // Reset counter if any job is not terminal
+            setPollInactiveCount(0);
+          }
         }
       } catch (error) {
         console.error(`Failed to fetch jobs:`, error);
         if (!isAutoPoll) {
           toast({ variant: "destructive", title: "Error", description: "Could not fetch job details." });
         }
+        setReleaseLinks(null);
       } finally {
         if (!isAutoPoll) setIsRefreshing(false);
       }
@@ -158,13 +175,16 @@ export function SubmissionDetails({ initialReleaseId = "" }: SubmissionDetailsPr
     [toast]
   );
 
+  // Live polling setup (stop only after consecutive all-terminal polls)
   useEffect(() => {
     if (pollingIntervalRef.current) {
       clearInterval(pollingIntervalRef.current);
       pollingIntervalRef.current = null;
     }
+    setPollInactiveCount(0);
     if (releaseIdToFetch && releaseIdRegex.test(releaseIdToFetch)) {
       handleRefresh(releaseIdToFetch);
+
       pollingIntervalRef.current = setInterval(() => {
         handleRefresh(releaseIdToFetch, true);
       }, 10000);
@@ -174,7 +194,17 @@ export function SubmissionDetails({ initialReleaseId = "" }: SubmissionDetailsPr
         clearInterval(pollingIntervalRef.current);
       }
     };
-  }, [releaseIdToFetch, handleRefresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [releaseIdToFetch]);
+
+  // Stop polling after N consecutive polls where no jobs are active
+  useEffect(() => {
+    if (pollInactiveCount >= 3 && pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+      setPollInactiveCount(0);
+    }
+  }, [pollInactiveCount]);
 
   useEffect(() => {
     setInputValue(initialReleaseId);
@@ -189,6 +219,9 @@ export function SubmissionDetails({ initialReleaseId = "" }: SubmissionDetailsPr
     }
     setValidationError(null);
     setReleaseIdToFetch(inputValue);
+
+    // Manual refresh is always allowed
+    handleRefresh(inputValue);
   };
 
   const renderJobsTable = (jobs: IJob[], type: JobType) => (
@@ -237,136 +270,168 @@ export function SubmissionDetails({ initialReleaseId = "" }: SubmissionDetailsPr
   const releaseTimeDisabled = !releaseIdRegex.test(releaseIdToFetch);
 
   return (
-    <Card>
-      <CardHeader>
-
-        {/* Uniform 4-button row, full width, centered content */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          <Button
-            asChild
-            variant="outline"
-            className="w-full justify-center text-center"
-            size="sm"
-          >
-            <Link href="http://dashboards.cerebras.aws:5002/release_qual_status" target="_blank">
-              <Beaker className="mr-2 h-4 w-4" />
-              Release Qual Status
-            </Link>
-          </Button>
-
-          <Button
-            asChild
-            variant="outline"
-            className="w-full justify-center text-center"
-            size="sm"
-          >
-            <Link href="http://dashboards.cerebras.aws:3001/" target="_blank">
-              <Activity className="mr-2 h-4 w-4" />
-              Release Metrics
-            </Link>
-          </Button>
-
-          <Button
-            asChild
-            variant="outline"
-            className="w-full justify-center text-center"
-            size="sm"
-            disabled={releaseTimeDisabled}
-            title={
-              releaseTimeDisabled
-                ? "Enter a valid Release ID (r####) to enable"
-                : "Open Release Time dashboard"
-            }
-          >
-            <a href={releaseTimeHref} target="_blank" rel="noopener noreferrer">
-              <Clock className="mr-2 h-4 w-4" />
-              Release Runtime
-            </a>
-          </Button>
-
-          <Button
-            asChild
-            variant="outline"
-            className="w-full justify-center text-center"
-            size="sm"
-          >
-            <Link href="http://mohitk-dev:5000" target="_blank">
-              <Monitor className="mr-2 h-4 w-4" />
-              Job Monitor
-            </Link>
-          </Button>
-        </div>
-
-        {/* Input / Fetch */}
-        <div>
-          <div className="flex w-full max-w-sm items-center space-x-2">
-            <Input
-              type="text"
-              placeholder="e.g., r2540"
-              value={inputValue}
-              onChange={(e) => {
-                setInputValue(e.target.value);
-                if (validationError) setValidationError(null);
-              }}
-              onKeyDown={(e) => e.key === "Enter" && onRefreshClick()}
-            />
-            <Button onClick={onRefreshClick} disabled={isRefreshing || !inputValue}>
-              {isRefreshing ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
-              )}
-              Fetch
+    <div className="space-y-6">
+      {/* Card 1: Release Dashboards */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Release Dashboards</CardTitle>
+          <CardDescription>External monitoring dashboards for all releases.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Button
+              asChild
+              variant="outline"
+              className="w-full justify-center text-center"
+              size="sm"
+            >
+              <Link href="http://dashboards.cerebras.aws:5002/release_qual_status" target="_blank">
+                <Beaker className="mr-2 h-4 w-4" />
+                Release Qual Status
+              </Link>
+            </Button>
+            <Button
+              asChild
+              variant="outline"
+              className="w-full justify-center text-center"
+              size="sm"
+            >
+              <Link href="http://dashboards.cerebras.aws:3001/" target="_blank">
+                <Activity className="mr-2 h-4 w-4" />
+                Release Metrics
+              </Link>
+            </Button>
+            <Button
+              asChild
+              variant="outline"
+              className="w-full justify-center text-center"
+              size="sm"
+              disabled={releaseTimeDisabled}
+              title={
+                releaseTimeDisabled
+                  ? "Enter a valid Release ID (r####) to enable"
+                  : "Open Release Time dashboard"
+              }
+            >
+              <a href={releaseTimeHref} target="_blank" rel="noopener noreferrer">
+                <Clock className="mr-2 h-4 w-4" />
+                Release Runtime
+              </a>
+            </Button>
+            <Button
+              asChild
+              variant="outline"
+              className="w-full justify-center text-center"
+              size="sm"
+            >
+              <Link href="http://mohitk-dev:5000" target="_blank">
+                <Monitor className="mr-2 h-4 w-4" />
+                Job Monitor
+              </Link>
             </Button>
           </div>
-          {validationError && (
-            <p className="text-sm text-destructive mt-2">{validationError}</p>
-          )}
-        </div>
-      </CardHeader>
+        </CardContent>
+      </Card>
 
-      <CardContent>
-        {!releaseIdToFetch || validationError ? (
-          <Alert>
-            <Info className="h-4 w-4" />
-            <AlertTitle>Enter a Release ID</AlertTitle>
-            <AlertDescription>
-              Please provide a valid Release ID above (e.g., r2540) to see job details.
-            </AlertDescription>
-          </Alert>
-        ) : (
-          <Tabs defaultValue="releases">
-            <TabsList>
-              <TabsTrigger value="releases">
-                <GitPullRequest className="mr-2 h-4 w-4" />
-                Release Jobs
-              </TabsTrigger>
-              <TabsTrigger value="pre-checks">
-                <ShieldAlert className="mr-2 h-4 w-4" />
-                Pre-check Jobs
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="releases">
-              {releaseJobs.length > 0 ? (
-                renderJobsTable(releaseJobs, "RELEASE")
-              ) : (
-                <p className="text-sm text-muted-foreground mt-4">
-                  No release jobs found for this ID.
-                </p>
-              )}
-            </TabsContent>
-            <TabsContent value="pre-checks">
-              {precheckJobs.length > 0 ? (
-                renderJobsTable(precheckJobs, "PRECHECK")
-              ) : (
-                <p className="text-sm text-muted-foreground mt-4">
-                  No pre-check jobs found for this ID.
-                </p>
-              )}
-            </TabsContent>
-          </Tabs>
-        )}
-      </CardContent>
-    </Card>
+      {/* Card 2: Job Status Lookup and Results */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Job Status Lookup</CardTitle>
+          <CardDescription>Enter a Release ID to track job status and view associated links.</CardDescription>
+          <div className="pt-4">
+            <div className="flex w-full max-w-sm items-center space-x-2">
+              <Input
+                type="text"
+                placeholder="e.g., r2540"
+                value={inputValue}
+                onChange={(e) => {
+                  setInputValue(e.target.value);
+                  if (validationError) setValidationError(null);
+                }}
+                onKeyDown={(e) => e.key === "Enter" && onRefreshClick()}
+              />
+              <Button onClick={onRefreshClick} disabled={isRefreshing || !inputValue}>
+                {isRefreshing ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                Fetch
+              </Button>
+            </div>
+            {validationError && (
+              <p className="text-sm text-destructive mt-2">{validationError}</p>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {/* NEW: Release Links Section (Jira/Jenkins) */}
+          {!isRefreshing && releaseIdToFetch && releaseLinks && (releaseLinks.jiraEpicUrl || releaseLinks.jenkinsJobUrl) && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                {releaseLinks.jiraEpicUrl && (
+                  <Button asChild variant="outline" className="w-full justify-center text-center" size="sm">
+                    <a href={releaseLinks.jiraEpicUrl} target="_blank" rel="noopener noreferrer">
+                      <Ticket className="mr-2 h-4 w-4" />
+                      JIRA  ({releaseLinks.jiraEpicKey || 'View'})
+                    </a>
+                  </Button>
+                )}
+                {releaseLinks.jenkinsJobUrl && (
+                  <Button asChild variant="outline" className="w-full justify-center text-center" size="sm">
+                    <a href={releaseLinks.jenkinsJobUrl} target="_blank" rel="noopener noreferrer">
+                      <Package className="mr-2 h-4 w-4" />
+                      {releaseLinks.jenkinsJobName || 'Jenkins Job'}
+                    </a>
+                  </Button>
+                )}
+              </div>
+              <Separator className="my-4" />
+            </>
+          )}
+
+          {!releaseIdToFetch || validationError ? (
+            <Alert>
+              <Info className="h-4 w-4" />
+              <AlertTitle>Enter a Release ID</AlertTitle>
+              <AlertDescription>
+                Please provide a valid Release ID above (e.g., r2540) to see job details.
+              </AlertDescription>
+            </Alert>
+          ) : (
+            <Tabs defaultValue="releases">
+              <TabsList>
+                <TabsTrigger value="releases">
+                  <GitPullRequest className="mr-2 h-4 w-4" />
+                  Release Jobs
+                </TabsTrigger>
+                <TabsTrigger value="pre-checks">
+                  <ShieldAlert className="mr-2 h-4 w-4" />
+                  Pre-check Jobs
+                </TabsTrigger>
+              </TabsList>
+              <TabsContent value="releases">
+                {releaseJobs.length > 0 ? (
+                  renderJobsTable(releaseJobs, "RELEASE")
+                ) : (
+                  <p className="text-sm text-muted-foreground mt-4">
+                    No release jobs found for this ID.
+                  </p>
+                )}
+              </TabsContent>
+              <TabsContent value="pre-checks">
+                {precheckJobs.length > 0 ? (
+                  renderJobsTable(precheckJobs, "PRECHECK")
+                ) : (
+                  <p className="text-sm text-muted-foreground mt-4">
+                    No pre-check jobs found for this ID.
+                  </p>
+                )}
+              </TabsContent>
+            </Tabs>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }

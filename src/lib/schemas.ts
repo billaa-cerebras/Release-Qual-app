@@ -3,11 +3,12 @@ import * as z from "zod";
 export const modelReleaseSchema = z.object({
   selected: z.boolean().optional(),
   modelName: z.string({ required_error: "Model name is required." }).min(1, "Model name is required."),
-  owner: z.string().optional(),
+  owner: z.string().min(1, "Owner is required."),
   cs: z.string().optional(),
   branch: z.string().min(1, "Branch is required."),
   appTag: z.string().min(1, "App-Tag is required."),
   multibox: z.string().min(1, 'MULTIBOX is required'),
+  usernoode: z.string().min(1, "Usernode is required."),
   miqBranch: z.string().optional(),
   profile: z.string(),
   labels: z.string().min(1, "Labels are required."),
