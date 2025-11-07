@@ -8,6 +8,7 @@ const ScrapedModelSchema = z.object({
   branch: z.string(),
   owner: z.string().optional(),
   cs: z.string().optional(),
+  miqBranch: z.string().optional(), // This was added in your previous update
 });
 
 const ScrapeOutputSchema = z.object({
@@ -20,7 +21,13 @@ export type ScrapeConfluenceOutput = z.infer<typeof ScrapeOutputSchema>;
 export type ConfluenceImportResult = {
   data?: {
     releaseTarget?: string;
-    models: { modelName: string; branch: string; owner?: string; cs?: string; }[];
+    models: { 
+      modelName: string; 
+      branch: string; 
+      owner?: string; 
+      cs?: string; 
+      miqBranch?: string; // This was added in your previous update
+    }[];
   };
   error?: string;
 }
@@ -61,7 +68,13 @@ async function fetchConfluencePage(url: string, email: string, apiToken: string)
 }
 
 
-function parseHtmlContent(html: string): { modelName: string; branch: string; owner?: string; cs?: string; }[] {
+function parseHtmlContent(html: string): { 
+  modelName: string; 
+  branch: string; 
+  owner?: string; 
+  cs?: string; 
+  miqBranch?: string; 
+}[] {
     const $ = cheerio.load(html);
 
     const overviewHeader = $('h1, h2, h3').filter((i, el) => {
@@ -133,20 +146,35 @@ function parseHtmlContent(html: string): { modelName: string; branch: string; ow
         return rowData;
     });
 
-    const requiredHeaders = ['model', 'branch'];
+    // --- START OF FIX ---
+    
     const foundHeaders = Object.keys(tableData[0] || {});
-    const hasRequiredHeaders = requiredHeaders.every(h => foundHeaders.includes(h));
 
-    if (!hasRequiredHeaders) {
-        throw new Error(`Could not find 'Model' and/or 'Branch' headers in the table. Found headers: ${foundHeaders.join(', ')}.`);
+    // 1. Check for 'model'
+    if (!foundHeaders.includes('model')) {
+        throw new Error(`Could not find 'Model' header in the table. Found headers: ${foundHeaders.join(', ')}.`);
     }
+
+    // 2. Check for 'branch' OR 'monolith branch'
+    const branchHeader = foundHeaders.includes('monolith branch') 
+                          ? 'monolith branch' 
+                          : foundHeaders.includes('branch') 
+                              ? 'branch' 
+                              : null;
+
+    if (!branchHeader) {
+        throw new Error(`Could not find 'Branch' or 'Monolith Branch' header in the table. Found headers: ${foundHeaders.join(', ')}.`);
+    }
+    
+    // --- END OF FIX ---
 
     return tableData.map(item => ({
         modelName: item.model?.text || "",
-        branch: item.branch?.text || "",
+        branch: item[branchHeader]?.text || "", // <-- Use the dynamic header
         owner: item.owner?.text || "",
-        cs: item.cs?.text || ""
-    })).filter(item => item.modelName && item.branch);
+        cs: item.cs?.text || "",
+        miqBranch: item['miq branch']?.text || "" // This was correct from your previous change
+    })).filter(item => item.modelName && item.branch); // This filter will now work correctly
 }
 
 
@@ -163,9 +191,9 @@ export async function importFromConfluence(url: string): Promise<ConfluenceImpor
             'ATLASSIAN credentials not set in .env.local. Using mock data.'
         );
         const mockData = [
-            { modelName: "llama3.1-8b", branch: "inference/main", owner: "John Doe", cs: "8" },
-            { modelName: "gpt-oss-120b", branch: "inference/dev", owner: "Jane Smith", cs: "16" },
-            { modelName: "invalid-model", branch: "inference/dev", owner: "Jane Smith", cs: "16" }
+            { modelName: "llama3.1-8b", branch: "inference/main", owner: "John Doe", cs: "8", miqBranch: "main" },
+            { modelName: "gpt-oss-120b", branch: "inference/dev", owner: "Jane Smith", cs: "16", miqBranch: "dev-branch" },
+            { modelName: "invalid-model", branch: "inference/dev", owner: "Jane Smith", cs: "16", miqBranch: "main" }
         ];
         return { data: { models: mockData, releaseTarget: "r2542" } };
     }
@@ -175,7 +203,7 @@ export async function importFromConfluence(url: string): Promise<ConfluenceImpor
         const models = parseHtmlContent(html);
 
         if (models.length === 0) {
-            return { error: "No models with both a 'Model' and 'Branch' could be extracted from the 'Overview' table." };
+            return { error: "No models with both a 'Model' and 'Branch' (or 'Monolith Branch') could be extracted from the 'Overview' table." };
         }
         
         let releaseTarget;
