@@ -64,7 +64,7 @@ export const triggerPrecheckJobs = ai.defineFlow(
         return { success: false, message: message };
     }
 
-    const jobName = "pre-checks-rel-qual";
+    const jobName = "pre-checks-release-qual";
     const jobUrl = `${JENKINS_URL}/job/${jobName}/buildWithParameters`;
     const headers = {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -81,7 +81,7 @@ export const triggerPrecheckJobs = ai.defineFlow(
           'MIQ_PROFILE_BRANCH': release.miqBranch, 'PROFILE_MODE': 'release', 'PROFILE_FLOW_NAME_FILTER': '', 'PROFILE_ATTR_FILTER': '',
           'SERVER_MODE': 'replica (Full replica server - requires systems)', 'SERVER_CONFIG_PARAMS': 'job_priority=p2\njob_timeout_s=172800\nreadiness_timeout_s=86400\n',
           'CEREBRAS_API_HOST': '', 'CEREBRAS_API_PORT': '', 'APP_TAG': release.appTag, 'APP_TAG_FROM_WORKSPACE': 'false', 'NAMESPACE': 'inf-integ',
-          'MULTIBOX': release.multibox, 'CONSTRAINTS': '', 'USERNODE': 'net004-us-sr04.sck2.cerebrascloud.com', 'USE_LOCAL_CHECKPOINT': 'true',
+          'MULTIBOX': release.multibox, 'CONSTRAINTS': '', 'USERNODE': release.usernoode || 'net004-us-sr04.sck2.cerebrascloud.com', 'USE_LOCAL_CHECKPOINT': 'true',
           'REMOTEWORKDIRROOT': '/n0/lab/test', 'RELEASE_DRY_RUN': 'false', 'RELEASE_KILL_SERVER_ON_ABORT': 'true', 'ENABLE_SERVER_AUTO_RECOVERY': 'true',
           'TRAIN_PYTEST_ADDOPTS': '--cifparam runconfig.job_priority=p1 --cifparam runconfig.disable_version_check=true', 'CUSTOM_TRAIN_FILE': '',
           'TRAIN_NAME': jobName, 'branch': release.branch, 'COMMIT': '', 'LOGLEVEL': 'INFO', 'BUILDID': 'latest', 'TRIGGER_AUTOMATED_MSG': 'false',

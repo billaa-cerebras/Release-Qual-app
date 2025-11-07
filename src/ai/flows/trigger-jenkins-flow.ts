@@ -93,20 +93,51 @@ export const triggerJenkinsJobs = ai.defineFlow(
     for (const release of releases) {
         // Construct parameters (ensure these match the job's expected params)
         const params = new URLSearchParams({
-            // ... (keep existing parameters, ensure they are correct for the cloned job)
-            'project': jenkinsJobName, // Use dynamic name if needed by job param
-            'MODEL_NAME': release.modelName,
-            'CUSTOM_MODEL_NAME': '', // etc...
-            'BRANCH': release.branch, // Ensure 'branch' is the correct param name if different from schema key
-            'APP_TAG': release.appTag,
-            'MULTIBOX': release.multibox,
-            'MIQ_PROFILE_BRANCH': release.miqBranch || '', // Handle optional field
-            'PROFILE': release.profile || '', // Handle optional field
-            'JOB_LABELS': release.labels,
-            'TARGET_RELEASE': release.releaseTarget,
-            'Notes': `Triggered via Release App for ${release.modelName} (Job: ${jenkinsJobName})`,
-            // Add/adjust other params as required by the CLONED job definition
-        });
+          'project': '',
+          'MODEL_NAME': release.modelName,
+          'CUSTOM_MODEL_NAME': '',
+          'MODEL_VARIANT_PARAMS': '',
+          'PICK_DEFAULT_DRAFT_MODEL': 'true', // Assuming this is the default
+          'DRAFT_MODEL_NAME': '', // Needs to be determined if there is a mapping
+          'CUSTOM_MODEL_CONFIG_FILE': '',
+          'RELEASE_PROFILE': release.profile,
+          'MIQ_PROFILE_BRANCH': release.miqBranch,
+          'PROFILE_MODE': 'release',
+          'PROFILE_FLOW_NAME_FILTER': '',
+          'PROFILE_ATTR_FILTER': '',
+          'SERVER_MODE': 'replica (Full replica server - requires systems)',
+          'SERVER_CONFIG_PARAMS': 'job_priority=p2\njob_timeout_s=172800\nreadiness_timeout_s=86400\n',
+          'CEREBRAS_API_HOST': '',
+          'CEREBRAS_API_PORT': '',
+          'APP_TAG': release.appTag,
+          'APP_TAG_FROM_WORKSPACE': 'false',
+          'NAMESPACE': 'inf-integ',
+          'MULTIBOX': release.multibox,
+          'CONSTRAINTS': '',
+          'USERNODE': release.usernoode, // This seems static in the script
+          'USE_LOCAL_CHECKPOINT': 'true',
+          'REMOTEWORKDIRROOT': '/n0/lab/test',
+          'RELEASE_DRY_RUN': 'false',
+          'RELEASE_KILL_SERVER_ON_ABORT': 'true',
+          'ENABLE_SERVER_AUTO_RECOVERY': 'true',
+          'TRAIN_PYTEST_ADDOPTS': '--cifparam runconfig.job_priority=p1 --cifparam runconfig.disable_version_check=true',
+          'CUSTOM_TRAIN_FILE': '',
+          'TRAIN_NAME': '',
+          'branch': release.branch,
+          'COMMIT': '',
+          'LOGLEVEL': 'INFO',
+          'BUILDID': 'latest',
+          'TRIGGER_AUTOMATED_MSG': 'false',
+          'Notes': ``,
+          'TARGET_RELEASE': release.releaseTarget,
+          'EXTRA_ENV_VARS': '',
+          'JOB_LABELS': release.labels,
+          'LAUNCH_AUTO_BISECT_JOB': 'false',
+          'IMPORT_SECRETS_FROM_VAULT': 'OPENAI_API_KEY,EVAL_GITHUB_TOKEN,CEREBRAS_API_KEY,HF_TOKEN',
+          'BUILD_NAME_SUFFIX': '',
+          'TEST_BRANCH': '',
+          'JOB_MONITOR_URL': release.monitorLink
+      });
 
          try {
             const response = await fetch(jobUrl, { method: 'POST', headers: headers, body: params.toString() });

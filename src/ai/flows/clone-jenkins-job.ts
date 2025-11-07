@@ -8,10 +8,12 @@ const cloneJenkinsJobInputSchema = z.object({
   releaseTarget: z.string().regex(/^r\d{4}$/, 'Must be in the format rXXXX'),
 });
 
+// +++ MODIFIED: Output schema now returns the job URL +++
 const cloneJenkinsJobOutputSchema = z.object({
   success: z.boolean(),
   message: z.string(),
   newJobName: z.string().optional(),
+  newJobUrl: z.string().optional(), // <-- New field
 });
 
 interface JenkinsCrumb {
@@ -24,7 +26,7 @@ export const cloneJenkinsJobFlow = ai.defineFlow(
   {
     name: 'cloneJenkinsJobFlow',
     inputSchema: cloneJenkinsJobInputSchema,
-    outputSchema: cloneJenkinsJobOutputSchema,
+    outputSchema: cloneJenkinsJobOutputSchema, // <-- Use modified schema
   },
   async ({ releaseTarget }) => {
     const { JENKINS_URL, JENKINS_USERNAME, JENKINS_API_TOKEN, JENKINS_TEMPLATE_JOB_NAME } = process.env;
@@ -34,16 +36,22 @@ export const cloneJenkinsJobFlow = ai.defineFlow(
     }
 
     const newJobName = `csx-inference-release-qual-${releaseTarget}`; // Define the new job name convention
+    const newJobUrl = `${JENKINS_URL}/job/${encodeURIComponent(newJobName)}`; // <-- Define the URL
     const sourceJobName = JENKINS_TEMPLATE_JOB_NAME;
     const auth = Buffer.from(`${JENKINS_USERNAME}:${JENKINS_API_TOKEN}`).toString('base64');
     const baseHeaders = { 'Authorization': `Basic ${auth}` };
 
     // 1. Check if the job already exists
     try {
-      const checkUrl = `${JENKINS_URL}/job/${encodeURIComponent(newJobName)}/api/json`; // Check specific job URL
+      const checkUrl = `${JENKINS_URL}/job/${encodeURIComponent(newJobName)}/api/json`;
       const checkResponse = await fetch(checkUrl, { headers: baseHeaders });
       if (checkResponse.ok) {
-        return { success: true, message: `Jenkins job '${newJobName}' already exists.`, newJobName };
+        return { 
+          success: true, 
+          message: `Jenkins job '${newJobName}' already exists.`, 
+          newJobName,
+          newJobUrl // <-- Return URL if exists
+        };
       }
       if (checkResponse.status !== 404) {
         throw new Error(`Failed to check job existence: ${checkResponse.statusText} (Status: ${checkResponse.status})`);
@@ -53,6 +61,7 @@ export const cloneJenkinsJobFlow = ai.defineFlow(
       console.warn(`Could not verify job existence for ${newJobName}: ${error.message}. Proceeding with creation attempt.`);
     }
 
+    // ... (configXml and Crumb logic is unchanged) ...
     let configXml = '';
     // 2. Get config.xml from the template job
     try {
@@ -83,7 +92,6 @@ export const cloneJenkinsJobFlow = ai.defineFlow(
          throw new Error(`Failed to fetch Jenkins crumb: ${response.statusText}`);
       }
     } catch (error: any) {
-      // Log the error but attempt to proceed without a crumb if CSRF protection might be off
       console.warn(`Warning: Error getting Jenkins crumb: ${error.message}. Attempting job creation without crumb.`);
     }
 
@@ -106,14 +114,23 @@ export const cloneJenkinsJobFlow = ai.defineFlow(
 
       if (!response.ok) {
         const errorText = await response.text();
-        // Handle common error: job already exists
         if (response.status === 400 && errorText.includes('already exists')) {
-             return { success: true, message: `Jenkins job '${newJobName}' already exists (detected during creation).`, newJobName };
+           return { 
+             success: true, 
+             message: `Jenkins job '${newJobName}' already exists (detected during creation).`, 
+             newJobName,
+             newJobUrl // <-- Return URL if exists
+           };
         }
         throw new Error(`Failed to create job '${newJobName}'. Status: ${response.status}. Response: ${errorText}`);
       }
 
-      return { success: true, message: `Successfully created Jenkins job '${newJobName}' from template '${sourceJobName}'.`, newJobName };
+      return { 
+        success: true, 
+        message: `Successfully created Jenkins job '${newJobName}' from template '${sourceJobName}'.`, 
+        newJobName,
+        newJobUrl // <-- Return URL on success
+      };
 
     } catch (error: any) {
       console.error(`Failed to create job ${newJobName}:`, error);

@@ -51,14 +51,16 @@ const checkJenkinsJobStatusFlow = ai.defineFlow(
     }
     const auth = Buffer.from(`${JENKINS_USERNAME}:${JENKINS_API_TOKEN}`).toString('base64');
 
-    // The provided flow handles both Release and Pre-check jobs, as long as they have a status that needs polling.
+    // +++ THIS IS THE FIX +++
+    // We must also poll for precheck jobs that are in the 'BUILDING' state.
     const jobsToPoll = await Job.find({
       releaseId,
       $or: [
         { status: { $in: ['QUEUED', 'BUILDING'] } },
-        { precheckStatus: 'PENDING' }
+        { precheckStatus: { $in: ['PENDING', 'BUILDING'] } } // <-- Corrected this line
       ]
     });
+    // +++ END OF FIX +++
 
     if (jobsToPoll.length === 0) {
       return { success: true, message: 'No active jobs to poll.' };
@@ -94,6 +96,7 @@ const checkJenkinsJobStatusFlow = ai.defineFlow(
           }
 
           const buildInfo = await response.json();
+          // This will correctly pick up "ABORTED" from buildInfo.result
           const newStatus = buildInfo.building ? 'BUILDING' : (buildInfo.result || 'UNKNOWN');
           
           const update: any = {
