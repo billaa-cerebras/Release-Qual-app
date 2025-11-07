@@ -5,7 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BatchReleaseForm } from "@/components/batch-release-form";
 import { SubmissionDetails } from "@/components/submission-details";
 import { ReleaseReport } from "@/components/release-report";
-import { Rocket, GitPullRequest, FileText } from "lucide-react";
+import { Rocket, GitPullRequest, FileText, Award } from "lucide-react";
 
 const TITLE_IMAGE_SRC =
   "https://media.licdn.com/dms/image/v2/D560BAQHNvGy6jnYPmg/company-logo_200_200/B56ZVDV63eHoAI-/0/1740591574812/cerebras_systems_logo?e=2147483647&v=beta&t=dy3IuJzO5Ui2tLfLlVcme5rAWQG5U4WsNDVJ_b4Ccpo";
@@ -21,6 +21,7 @@ export default function HomePage() {
 
   return (
     <div className="mx-auto w-full px-4 md:px-8 py-6">
+      {/* --- Header Section (Logo and Title) --- */}
       <div className="flex items-center gap-6 mb-10">
         <img
           src={TITLE_IMAGE_SRC}
@@ -36,6 +37,10 @@ export default function HomePage() {
         </div>
       </div>
 
+      {/* +++ The <div className="container mx-auto"> wrapper has been REMOVED from around the <Tabs> and <footer> +++
+      */}
+
+      {/* --- Tabs Section (Unchanged) --- */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="grid justify-center w-full max-w-3xl grid-cols-3">
           <TabsTrigger value="release-execution" className="flex items-center gap-2 text-lg ">
@@ -76,6 +81,32 @@ export default function HomePage() {
           <ReleaseReport />
         </TabsContent>
       </Tabs>
+
+      {/* +++ FOOTER SECTION +++ */}
+      <footer className="mt-12 py-4 border-t">
+        {/* - The 'container mx-auto' div was REMOVED from here.
+          - The 'inline-block' div now sits directly in the footer.
+          - The footer will be full-width (respecting the root padding),
+            and the 'inline-block' will align to the left.
+        */}
+        <div className="inline-block rounded-lg border bg-muted/40 p-3">
+          
+          {/* Title with icon */}
+          <div className="flex items-center gap-2">
+            <Award className="h-6 w-6" />
+            <p className="text-xl font-bold text-foreground">
+              Contributors:
+            </p>
+          </div>
+
+          {/* Contributor names */}
+          <div className="text-small space-y-1 mt-2 pl-2">
+            <p> BILLA ABHIGNAN (billa.abhignan@cerebras.net)</p>
+            <p> MOHIT KUMAR (mohit.kumar@cerebras.net)</p>
+          </div>
+        </div>
+      </footer>
+      {/* +++ END OF FOOTER SECTION +++ */}
     </div>
   );
 }
