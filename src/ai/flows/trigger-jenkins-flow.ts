@@ -100,7 +100,7 @@ export const triggerJenkinsJobs = ai.defineFlow(
           'PICK_DEFAULT_DRAFT_MODEL': 'true', // Assuming this is the default
           'DRAFT_MODEL_NAME': '', // Needs to be determined if there is a mapping
           'CUSTOM_MODEL_CONFIG_FILE': '',
-          'RELEASE_PROFILE': release.profile,
+          'RELEASE_PROFILE': release.customProfile || '',
           'MIQ_PROFILE_BRANCH': release.miqBranch,
           'PROFILE_MODE': 'release',
           'PROFILE_FLOW_NAME_FILTER': '',
@@ -122,7 +122,7 @@ export const triggerJenkinsJobs = ai.defineFlow(
           'ENABLE_SERVER_AUTO_RECOVERY': 'true',
           'TRAIN_PYTEST_ADDOPTS': '--cifparam runconfig.job_priority=p1 --cifparam runconfig.disable_version_check=true',
           'CUSTOM_TRAIN_FILE': '',
-          'TRAIN_NAME': '',
+          'TRAIN_NAME': 'csx-inference-model-qual-v2',
           'branch': release.branch,
           'COMMIT': '',
           'LOGLEVEL': 'INFO',

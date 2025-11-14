@@ -27,7 +27,6 @@ import {
   XCircle,
   LayoutDashboard,
   ClipboardCheck,
-  HardDrive,
   // +++ NEW ICONS +++
   CheckCircle,
   Hourglass,
@@ -91,6 +90,7 @@ const tableHeaders = [
   { key: "cs", label: "CS", required: false, icon: Server, isEditable: true },
   { key: "branch", label: "Branch", required: true, icon: GitBranch, isEditable: true },
   { key: "miqBranch", label: "MIQ Branch", required: true, icon: GitMerge, isEditable: true },
+  { key: "customProfile", label: "Custom Profile", required: false, icon: FileInput, isEditable: true },
   { key: "appTag", label: "App-Tag", required: true, icon: Tag, isEditable: true },
   { key: "multibox", label: "MULTIBOX", required: true, icon: Boxes, isEditable: true },
   { key: "usernoode", label: "Usernode", required: true, icon: Blocks, isEditable: true }, 
@@ -103,7 +103,7 @@ const initialFormValues: ModelRelease = {
   selected: true, modelName: "", branch: "", appTag: "none", miqBranch: "main",
   multibox: "dh1", usernoode: "net004-us-sr04.sck2.cerebrascloud.com", 
   monitorLink: "mohitk-dev:5000", profile: "", labels: "", releaseTarget: "",
-  owner: "", cs: ""
+  owner: "", cs: "", customProfile: "",
 };
 
 // +++ NEW TYPE for Progress State +++

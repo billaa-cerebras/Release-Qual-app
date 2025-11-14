@@ -285,7 +285,7 @@ export function SubmissionDetails({ initialReleaseId = "" }: SubmissionDetailsPr
               className="w-full justify-center text-center"
               size="sm"
             >
-              <Link href="http://dashboards.cerebras.aws:5002/release_qual_status" target="_blank">
+              <Link href="http://dashboards.cerebras.aws:3008/release?targetReleaseList=%5B%22r2546%22%5D&activeTab=releaseQual" target="_blank">
                 <Beaker className="mr-2 h-4 w-4" />
                 Release Qual Status
               </Link>
@@ -313,7 +313,7 @@ export function SubmissionDetails({ initialReleaseId = "" }: SubmissionDetailsPr
                   : "Open Release Time dashboard"
               }
             >
-              <a href={releaseTimeHref} target="_blank" rel="noopener noreferrer">
+              <a href="http://172.31.58.3:8501/?view=Overall+Release+Comparison" target="_blank" rel="noopener noreferrer">
                 <Clock className="mr-2 h-4 w-4" />
                 Release Runtime
               </a>

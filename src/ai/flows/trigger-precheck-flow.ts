@@ -77,7 +77,7 @@ export const triggerPrecheckJobs = ai.defineFlow(
     for (const release of releases) {
       const params = new URLSearchParams({
           'project': jobName, 'MODEL_NAME': release.modelName, 'CUSTOM_MODEL_NAME': '', 'MODEL_VARIANT_PARAMS': '',
-          'PICK_DEFAULT_DRAFT_MODEL': 'true', 'DRAFT_MODEL_NAME': '', 'CUSTOM_MODEL_CONFIG_FILE': '', 'RELEASE_PROFILE': release.profile,
+          'PICK_DEFAULT_DRAFT_MODEL': 'true', 'DRAFT_MODEL_NAME': '', 'CUSTOM_MODEL_CONFIG_FILE': '', 'RELEASE_PROFILE': release.customProfile || '',
           'MIQ_PROFILE_BRANCH': release.miqBranch, 'PROFILE_MODE': 'release', 'PROFILE_FLOW_NAME_FILTER': '', 'PROFILE_ATTR_FILTER': '',
           'SERVER_MODE': 'replica (Full replica server - requires systems)', 'SERVER_CONFIG_PARAMS': 'job_priority=p2\njob_timeout_s=172800\nreadiness_timeout_s=86400\n',
           'CEREBRAS_API_HOST': '', 'CEREBRAS_API_PORT': '', 'APP_TAG': release.appTag, 'APP_TAG_FROM_WORKSPACE': 'false', 'NAMESPACE': 'inf-integ',
